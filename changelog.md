@@ -1,3 +1,15 @@
+# 1.1.6
+
+- Faster ghost sync: default 30 Hz position updates (configurable 15–60 Hz)
+- Timestamped snapshot interpolation with light extrapolation for smoother remote ghosts
+- Lightweight position packets; full icon/color updates only when changed or every ~1s
+- New settings: Position Send Rate and Ghost Interpolation Delay
+
+# 1.1.5
+
+- Ping/pong keepalive: detect lost host connection and auto-reconnect (up to 3 attempts)
+- Clean disconnect if reconnect fails; UI shows "Reconnecting to host..."
+
 # 1.1.4
 
 - GameSync worker thread: JSON parse/serialize off main thread

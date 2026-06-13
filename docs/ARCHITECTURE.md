@@ -59,7 +59,7 @@ sequenceDiagram
     B->>WS: Join discovered host
     B->>WS: hello { name }
     WS->>B: lobby { players }
-    A->>WS: level_start + player_state @ 20 Hz
+    A->>WS: level_start + player_state @ 30 Hz
     WS->>B: relay player_state
     Note over A,B: Each sees ghost SimplePlayer of the other
 ```
@@ -80,7 +80,7 @@ Clam keeps network I/O off the main game thread. Cocos node updates stay on the 
 
 | Thread | Responsibility |
 |--------|----------------|
-| **Main (GD / cocos)** | UI, `PlayLayer::postUpdate`, ghost sprites, drain inbound queue, send local state ~20 Hz |
+| **Main (GD / cocos)** | UI, `PlayLayer::postUpdate`, ghost sprites, drain inbound queue, send local state ~30 Hz |
 | **WebSocket** | One dedicated thread per session (`server->run()` or `client->run()`) |
 | **LAN listen** | UDP recv, update discovered-game list |
 | **LAN broadcast** | Periodic UDP send while host is in an eligible level |
@@ -181,9 +181,10 @@ Defined in `src/net/Protocol.hpp`.
 }
 ```
 
-- **Send rate:** ~20 Hz (`tickLocal` accumulates `dt`, fires every 0.05 s).
-- **Colors:** packed as 24-bit RGB integers (`0xRRGGBB`). *Shipped in v1.1.3 without color fields; present in current source.*
-- **Scale:** from `PlayerObject::getScale()` (mini ≈ 0.5). *Interpolation + scale sync in current source, not yet released.*
+- **Send rate:** ~30 Hz default (`sync-send-hz` setting, 15–60 Hz). Lite packets every tick; full icon/color/scale when changed or ~1 s.
+- **Colors:** packed as 24-bit RGB integers (`0xRRGGBB`).
+- **Interpolation:** timestamped snapshot buffer with configurable render delay (`interpolation-delay-ms`, default 35 ms) and up to 15% extrapolation.
+- **Scale:** from `PlayerObject::getScale()` (mini ≈ 0.5).
 
 ### `level_start` / `level_end`
 

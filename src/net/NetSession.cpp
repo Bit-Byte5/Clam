@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <thread>
@@ -103,11 +104,140 @@ void broadcastGameMessageLocked(HostState* host, std::string const& payload) {
     }
 }
 
+void sendPongLocked(HostState* host, connection_hdl hdl, uint64_t seq) {
+    std::lock_guard sendLock(host->sendMutex);
+    try {
+        if (!hdl.expired()) {
+            host->server->send(hdl, makePong(seq), websocketpp::frame::opcode::text);
+        }
+    } catch (...) {}
+}
+
 } // namespace
 
 NetSession& NetSession::get() {
     static NetSession session;
     return session;
+}
+
+int64_t NetSession::nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()
+    ).count();
+}
+
+void NetSession::noteHostAlive() {
+    m_lastHostAliveMs.store(nowMs());
+}
+
+void NetSession::onClientTransportOpen() {
+    m_clientConnected.store(true);
+    m_reconnecting.store(false);
+    m_pendingReconnect.store(false);
+    m_reconnectAttempts = 0;
+    m_reconnectDelay = 0.f;
+    m_pingTimer = 0.f;
+    noteHostAlive();
+
+    if (role() == SessionRole::Client) {
+        log("Connected to host");
+    }
+}
+
+void NetSession::onClientTransportLost(bool unexpected) {
+    m_clientConnected.store(false);
+
+    if (m_stopping.load() || m_reconnecting.load()) {
+        return;
+    }
+
+    if (unexpected && role() == SessionRole::Client) {
+        m_pendingReconnect.store(true);
+    }
+}
+
+void NetSession::sendPing() {
+    if (!g_client || !m_clientConnected.load()) return;
+
+    auto payload = makePing(++m_pingSeq);
+    auto* client = g_client;
+    try {
+        std::lock_guard lock(client->sendMutex);
+        if (client->connection) {
+            client->client->send(
+                client->connection->get_handle(),
+                payload,
+                websocketpp::frame::opcode::text
+            );
+        }
+    } catch (...) {}
+}
+
+void NetSession::beginReconnect() {
+    if (m_reconnecting.load() || m_stopping.load()) return;
+    if (m_reconnectHost.empty() || m_reconnectPort <= 0) return;
+
+    m_reconnecting.store(true);
+    m_clientConnected.store(false);
+    m_reconnectDelay = 0.f;
+    log("Connection lost — reconnecting...");
+    stopClientTransport();
+}
+
+void NetSession::tryReconnect() {
+    if (m_stopping.load()) return;
+
+    m_reconnectAttempts++;
+    log("Reconnect attempt " + std::to_string(m_reconnectAttempts) + "/"
+        + std::to_string(kMaxReconnectAttempts));
+
+    if (!startClientTransport(m_reconnectHost, m_reconnectPort, m_localName)) {
+        if (m_reconnectAttempts >= kMaxReconnectAttempts) {
+            log("Could not reconnect — disconnecting");
+            m_reconnecting.store(false);
+            stop();
+            return;
+        }
+
+        m_reconnectDelay = 0.f;
+        return;
+    }
+
+    m_reconnectDelay = 0.f;
+}
+
+void NetSession::tick(float dt) {
+    if (role() != SessionRole::Client) return;
+    if (m_stopping.load()) return;
+
+    if (m_pendingReconnect.exchange(false)) {
+        beginReconnect();
+    }
+
+    if (m_reconnecting.load()) {
+        m_reconnectDelay += dt;
+        if (m_reconnectDelay >= kReconnectDelay) {
+            tryReconnect();
+        }
+        return;
+    }
+
+    if (!m_clientConnected.load()) return;
+
+    m_pingTimer += dt;
+    if (m_pingTimer >= kPingInterval) {
+        m_pingTimer = 0.f;
+        sendPing();
+    }
+
+    auto lastAlive = m_lastHostAliveMs.load();
+    if (lastAlive > 0 && nowMs() - lastAlive > static_cast<int64_t>(kPongTimeout * 1000.f)) {
+        beginReconnect();
+    }
+}
+
+bool NetSession::isReconnecting() const {
+    return m_reconnecting.load();
 }
 
 std::string localPlayerName() {
@@ -130,6 +260,20 @@ bool shareUsernameSetting() {
     auto* mod = Mod::get();
     if (!mod) return true;
     return mod->getSettingValue<bool>("share-username");
+}
+
+int syncSendHzSetting() {
+    auto* mod = Mod::get();
+    if (!mod) return 30;
+    auto hz = static_cast<int>(mod->getSettingValue<int64_t>("sync-send-hz"));
+    return std::clamp(hz, 15, 60);
+}
+
+int interpolationDelayMsSetting() {
+    auto* mod = Mod::get();
+    if (!mod) return 35;
+    auto delay = static_cast<int>(mod->getSettingValue<int64_t>("interpolation-delay-ms"));
+    return std::clamp(delay, 0, 80);
 }
 
 SessionRole NetSession::role() const {
@@ -263,6 +407,11 @@ void NetSession::startLanBrowser() {
 void NetSession::stopLanBrowser() {
     LanDiscovery::get().stopBroadcast();
     LanDiscovery::get().stopBrowser();
+}
+
+void NetSession::invalidateNearbyCache() {
+    std::lock_guard lock(m_nearbyMutex);
+    m_nearbyFingerprint.clear();
 }
 
 std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
@@ -476,7 +625,13 @@ bool NetSession::startHost(int port, std::string const& playerName) {
                 return;
             }
 
-            if (isLobbyMessageType(type)) return;
+            if (type == "ping") {
+                auto seq = static_cast<uint64_t>(root["seq"].asInt().unwrapOr(0));
+                sendPongLocked(host, hdl, seq);
+                return;
+            }
+
+            if (isControlMessageType(type)) return;
 
             GameSync::get().queueIncoming(payload);
             relayGameMessageLocked(host, hdl, payload);
@@ -519,8 +674,8 @@ bool NetSession::startHost(int port, std::string const& playerName) {
     }
 }
 
-bool NetSession::join(std::string const& host, int port, std::string const& playerName) {
-    stop();
+bool NetSession::startClientTransport(std::string const& host, int port, std::string const& playerName) {
+    stopClientTransport();
 
     auto* client = new ClientState();
     g_client = client;
@@ -534,7 +689,7 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
         auto uri = "ws://" + host + ":" + std::to_string(port);
 
         client->client->set_open_handler([this, client, playerName](connection_hdl) {
-            log("Connected to host");
+            onClientTransportOpen();
             try {
                 std::lock_guard lock(client->sendMutex);
                 client->client->send(
@@ -548,6 +703,12 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
 
         client->client->set_close_handler([this](connection_hdl) {
             log("Disconnected from host");
+            onClientTransportLost(true);
+
+            if (m_stopping.load() || m_reconnecting.load()) {
+                return;
+            }
+
             queueSetPeers({});
             GameSync::get().queueSessionStop();
         });
@@ -562,13 +723,20 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
             auto type = root["type"].asString().unwrapOr("");
 
             if (type == "lobby") {
+                noteHostAlive();
                 handleLobbyMessage(payload);
                 log("<- lobby update");
                 return;
             }
 
-            if (isLobbyMessageType(type)) return;
+            if (type == "pong") {
+                noteHostAlive();
+                return;
+            }
 
+            if (isControlMessageType(type)) return;
+
+            noteHostAlive();
             GameSync::get().queueIncoming(payload);
         });
 
@@ -595,54 +763,79 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
             client->running.store(false);
         });
 
-        {
-            std::lock_guard lock(m_mutex);
-            m_role = SessionRole::Client;
-            m_port = port;
-            m_hostAddress = host;
-            m_localName = playerName;
-            m_peers = {{0, playerName, true}};
-        }
-
-        log("Joining " + uri + " ...");
         return true;
     } catch (std::exception const& e) {
-        log("Failed to join: " + std::string(e.what()));
+        log("Failed to connect: " + std::string(e.what()));
         delete client;
         g_client = nullptr;
         return false;
     }
 }
 
+void NetSession::stopClientTransport() {
+    if (!g_client) return;
+
+    auto* client = g_client;
+    g_client = nullptr;
+
+    client->running.store(false);
+    try {
+        if (client->connection) {
+            client->client->close(
+                client->connection->get_handle(),
+                websocketpp::close::status::going_away,
+                "Clam stopped"
+            );
+        }
+        client->client->stop();
+    } catch (...) {}
+
+    if (client->thread.joinable()) {
+        client->thread.join();
+    }
+
+    delete client;
+    m_clientConnected.store(false);
+}
+
+bool NetSession::join(std::string const& host, int port, std::string const& playerName) {
+    stop();
+
+    m_reconnectHost = host;
+    m_reconnectPort = port;
+    m_reconnectAttempts = 0;
+    m_reconnecting.store(false);
+    m_pendingReconnect.store(false);
+
+    if (!startClientTransport(host, port, playerName)) {
+        return false;
+    }
+
+    {
+        std::lock_guard lock(m_mutex);
+        m_role = SessionRole::Client;
+        m_port = port;
+        m_hostAddress = host;
+        m_localName = playerName;
+        m_peers = {{0, playerName, true}};
+    }
+
+    log("Joining ws://" + host + ":" + std::to_string(port) + " ...");
+    return true;
+}
+
 void NetSession::stop() {
+    m_stopping.store(true);
+    m_reconnecting.store(false);
+    m_pendingReconnect.store(false);
+
     bool wasActive = false;
     {
         std::lock_guard lock(m_mutex);
         wasActive = m_role != SessionRole::None;
     }
 
-    if (g_client) {
-        auto* client = g_client;
-        g_client = nullptr;
-
-        client->running.store(false);
-        try {
-            if (client->connection) {
-                client->client->close(
-                    client->connection->get_handle(),
-                    websocketpp::close::status::going_away,
-                    "Clam stopped"
-                );
-            }
-            client->client->stop();
-        } catch (...) {}
-
-        if (client->thread.joinable()) {
-            client->thread.join();
-        }
-
-        delete client;
-    }
+    stopClientTransport();
 
     if (g_host) {
         auto* host = g_host;
@@ -671,6 +864,9 @@ void NetSession::stop() {
         m_hostLevelId = 0;
         m_peers.clear();
         m_pendingPeers.reset();
+        m_reconnectHost.clear();
+        m_reconnectPort = 0;
+        m_reconnectAttempts = 0;
     }
 
     {
@@ -679,7 +875,13 @@ void NetSession::stop() {
         m_nearbyFingerprint.clear();
     }
 
+    m_pingTimer = 0.f;
+    m_reconnectDelay = 0.f;
+    m_lastHostAliveMs.store(0);
+
     GameSync::get().onSessionStop();
+
+    m_stopping.store(false);
 
     if (wasActive) {
         log("Session stopped");

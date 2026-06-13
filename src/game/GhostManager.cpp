@@ -1,6 +1,9 @@
 #include "GhostManager.hpp"
 
+#include "../net/NetSession.hpp"
+
 #include <cmath>
+#include <chrono>
 
 using namespace geode::prelude;
 
@@ -8,8 +11,15 @@ namespace clam {
 
 namespace {
 
-constexpr float kSmoothRate = 14.f;
-constexpr float kSnapDistanceSq = 120.f * 120.f;
+constexpr float kSmoothRate = 22.f;
+constexpr float kSnapDistanceSq = 160.f * 160.f;
+constexpr float kMaxExtrapolation = 1.15f;
+
+double nowMs() {
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()
+    ).count();
+}
 
 bool sameColor(cocos2d::ccColor3B const& a, cocos2d::ccColor3B const& b) {
     return a.r == b.r && a.g == b.g && a.b == b.b;
@@ -24,6 +34,30 @@ float lerpAngle(float from, float to, float t) {
 
 float smoothStep(float dt) {
     return 1.f - std::exp(-kSmoothRate * dt);
+}
+
+void interpolateSnapshot(
+    RemotePeerState const& state,
+    float& outX,
+    float& outY,
+    float& outRotation
+) {
+    outX = state.x;
+    outY = state.y;
+    outRotation = state.rotation;
+
+    if (state.snapshotMs <= state.prevSnapshotMs) {
+        return;
+    }
+
+    double const renderTime = nowMs() - static_cast<double>(interpolationDelayMsSetting());
+    double alpha = (renderTime - state.prevSnapshotMs)
+        / (state.snapshotMs - state.prevSnapshotMs);
+    alpha = std::clamp(alpha, 0.0, static_cast<double>(kMaxExtrapolation));
+
+    outX = static_cast<float>(state.prevX + (state.x - state.prevX) * alpha);
+    outY = static_cast<float>(state.prevY + (state.y - state.prevY) * alpha);
+    outRotation = lerpAngle(state.prevRotation, state.rotation, static_cast<float>(alpha));
 }
 
 } // namespace
@@ -50,35 +84,37 @@ void GhostManager::applyScale(GhostEntry& entry, float scale) {
     entry.sprite->setScale(scale);
 }
 
-void GhostManager::setTarget(GhostEntry& entry, RemotePeerState const& state) {
-    entry.targetX = state.x;
-    entry.targetY = state.y;
-    entry.targetRotation = state.rotation;
+void GhostManager::applyInterpolatedPosition(
+    GhostEntry& entry,
+    RemotePeerState const& state,
+    float dt
+) {
+    if (!entry.sprite) return;
+
+    float targetX = 0.f;
+    float targetY = 0.f;
+    float targetRotation = 0.f;
+    interpolateSnapshot(state, targetX, targetY, targetRotation);
 
     if (!entry.positioned) {
-        entry.x = state.x;
-        entry.y = state.y;
-        entry.rotation = state.rotation;
+        entry.x = targetX;
+        entry.y = targetY;
+        entry.rotation = targetRotation;
         entry.positioned = true;
-        return;
+    } else {
+        float dx = targetX - entry.x;
+        float dy = targetY - entry.y;
+        if (dx * dx + dy * dy >= kSnapDistanceSq) {
+            entry.x = targetX;
+            entry.y = targetY;
+            entry.rotation = targetRotation;
+        } else {
+            float t = smoothStep(dt);
+            entry.x += (targetX - entry.x) * t;
+            entry.y += (targetY - entry.y) * t;
+            entry.rotation = lerpAngle(entry.rotation, targetRotation, t);
+        }
     }
-
-    float dx = entry.targetX - entry.x;
-    float dy = entry.targetY - entry.y;
-    if (dx * dx + dy * dy >= kSnapDistanceSq) {
-        entry.x = state.x;
-        entry.y = state.y;
-        entry.rotation = state.rotation;
-    }
-}
-
-void GhostManager::applySmoothing(GhostEntry& entry, float dt) {
-    if (!entry.positioned || !entry.sprite) return;
-
-    float t = smoothStep(dt);
-    entry.x += (entry.targetX - entry.x) * t;
-    entry.y += (entry.targetY - entry.y) * t;
-    entry.rotation = lerpAngle(entry.rotation, entry.targetRotation, t);
 
     entry.sprite->setPosition({entry.x, entry.y});
     entry.sprite->setRotation(entry.rotation);
@@ -108,8 +144,7 @@ void GhostManager::sync(PlayLayer* layer, std::vector<RemotePeerState> const& st
         ghost->setVisible(true);
         applyScale(*entry, state.scale);
         applyColors(*entry, state.color1, state.color2);
-        setTarget(*entry, state);
-        applySmoothing(*entry, dt);
+        applyInterpolatedPosition(*entry, state, dt);
     }
 
     std::vector<uint64_t> stale;

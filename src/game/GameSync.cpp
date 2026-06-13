@@ -7,6 +7,7 @@
 #include <Geode/binding/PlayerObject.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <utility>
 
 using namespace geode::prelude;
@@ -14,6 +15,9 @@ using namespace geode::prelude;
 namespace clam {
 
 namespace {
+
+constexpr float kFullRefreshInterval = 1.f;
+constexpr float kSnapshotTeleportSq = 160.f * 160.f;
 
 double nowMs() {
     return std::chrono::duration<double, std::milli>(
@@ -125,6 +129,8 @@ void GameSync::onLevelEnter(int levelId) {
     m_localLevelId = levelId;
     m_inLevel = true;
     m_sendTimer = 0.f;
+    m_fullRefreshTimer = 0.f;
+    m_hasLastSentSnapshot = false;
 
     if (NetSession::get().role() == SessionRole::Host) {
         NetSession::get().hostEnteredLevel(levelId);
@@ -163,6 +169,8 @@ void GameSync::onLevelExit() {
     m_inLevel = false;
     m_localLevelId = 0;
     m_sendTimer = 0.f;
+    m_fullRefreshTimer = 0.f;
+    m_hasLastSentSnapshot = false;
     clearRemoteState();
 }
 
@@ -170,6 +178,8 @@ void GameSync::onSessionStop() {
     m_inLevel = false;
     m_localLevelId = 0;
     m_sendTimer = 0.f;
+    m_fullRefreshTimer = 0.f;
+    m_hasLastSentSnapshot = false;
     clearRemoteState();
 
     {
@@ -184,12 +194,18 @@ void GameSync::clearRemoteState() {
     m_remotes.clear();
 }
 
+float GameSync::sendIntervalSeconds() const {
+    return 1.f / static_cast<float>(syncSendHzSetting());
+}
+
 void GameSync::tickLocal(PlayLayer* layer, float dt) {
     if (!m_inLevel || !layer || !layer->m_player1) return;
     if (!NetSession::get().isActive()) return;
 
     m_sendTimer += dt;
-    if (m_sendTimer < 0.05f) return;
+    m_fullRefreshTimer += dt;
+
+    if (m_sendTimer < sendIntervalSeconds()) return;
     m_sendTimer = 0.f;
 
     auto* player = layer->m_player1;
@@ -207,6 +223,11 @@ void GameSync::tickLocal(PlayLayer* layer, float dt) {
     if (snapshot.scale <= 0.f) snapshot.scale = 1.f;
     snapshot.color1 = player->m_playerColor1;
     snapshot.color2 = player->m_playerColor2;
+    snapshot.snapshotMs = static_cast<int64_t>(nowMs());
+    snapshot.forceFull = m_fullRefreshTimer >= kFullRefreshInterval;
+    if (snapshot.forceFull) {
+        m_fullRefreshTimer = 0.f;
+    }
 
     {
         std::lock_guard lock(m_queueMutex);
@@ -215,19 +236,54 @@ void GameSync::tickLocal(PlayLayer* layer, float dt) {
     notifyWorker();
 }
 
+bool GameSync::cosmeticsChanged(LocalPlayerSnapshot const& snapshot) const {
+    if (!m_hasLastSentSnapshot) return true;
+
+    return m_lastSentSnapshot.iconId != snapshot.iconId
+        || m_lastSentSnapshot.scale != snapshot.scale
+        || m_lastSentSnapshot.color1.r != snapshot.color1.r
+        || m_lastSentSnapshot.color1.g != snapshot.color1.g
+        || m_lastSentSnapshot.color1.b != snapshot.color1.b
+        || m_lastSentSnapshot.color2.r != snapshot.color2.r
+        || m_lastSentSnapshot.color2.g != snapshot.color2.g
+        || m_lastSentSnapshot.color2.b != snapshot.color2.b;
+}
+
 void GameSync::sendPlayerState(LocalPlayerSnapshot const& snapshot) {
-    NetSession::get().sendGameMessage(makePlayerState(
-        snapshot.peerId,
-        snapshot.levelId,
-        snapshot.x,
-        snapshot.y,
-        snapshot.rotation,
-        snapshot.dead,
-        snapshot.iconId,
-        snapshot.scale,
-        snapshot.color1,
-        snapshot.color2
-    ));
+    bool sendFull = !m_hasLastSentSnapshot
+        || snapshot.forceFull
+        || cosmeticsChanged(snapshot);
+
+    std::string payload;
+    if (sendFull) {
+        payload = makePlayerState(
+            snapshot.peerId,
+            snapshot.levelId,
+            snapshot.x,
+            snapshot.y,
+            snapshot.rotation,
+            snapshot.dead,
+            snapshot.iconId,
+            snapshot.scale,
+            snapshot.color1,
+            snapshot.color2,
+            snapshot.snapshotMs
+        );
+    } else {
+        payload = makePlayerStateLite(
+            snapshot.peerId,
+            snapshot.levelId,
+            snapshot.x,
+            snapshot.y,
+            snapshot.rotation,
+            snapshot.dead,
+            snapshot.snapshotMs
+        );
+    }
+
+    NetSession::get().sendGameMessage(payload);
+    m_lastSentSnapshot = snapshot;
+    m_hasLastSentSnapshot = true;
 }
 
 std::vector<RemotePeerState> GameSync::getRemoteStates(int levelId) const {
@@ -299,22 +355,50 @@ void GameSync::handleMessage(std::string const& payload) {
 void GameSync::applyPlayerState(matjson::Value const& root) {
     auto peerId = static_cast<uint64_t>(root["peerId"].asInt().unwrapOr(0));
 
+    auto newX = static_cast<float>(root["x"].asDouble().unwrapOr(0.0));
+    auto newY = static_cast<float>(root["y"].asDouble().unwrapOr(0.0));
+    auto newRotation = static_cast<float>(root["rotation"].asDouble().unwrapOr(0.0));
+    auto snapTime = root["t"].asDouble().unwrapOr(nowMs());
+    bool isFull = root.contains("iconId");
+
     std::lock_guard lock(m_stateMutex);
     auto& state = m_remotes[peerId];
     state.peerId = peerId;
     state.name = peerName(peerId);
     state.levelId = static_cast<int>(root["levelId"].asInt().unwrapOr(0));
-    state.x = static_cast<float>(root["x"].asDouble().unwrapOr(0.0));
-    state.y = static_cast<float>(root["y"].asDouble().unwrapOr(0.0));
-    state.rotation = static_cast<float>(root["rotation"].asDouble().unwrapOr(0.0));
     state.dead = root["dead"].asBool().unwrapOr(false);
-    state.iconId = static_cast<int>(root["iconId"].asInt().unwrapOr(1));
-    state.scale = static_cast<float>(root["scale"].asDouble().unwrapOr(1.0));
-    if (state.scale <= 0.f) state.scale = 1.f;
-    state.color1 = unpackColor(static_cast<int>(root["color1"].asInt().unwrapOr(0xFFFFFF)));
-    state.color2 = unpackColor(static_cast<int>(root["color2"].asInt().unwrapOr(0xFFFFFF)));
     state.inLevel = true;
     state.lastSeenMs = nowMs();
+
+    bool hasPrev = state.snapshotMs > 0.0;
+    float dx = newX - state.x;
+    float dy = newY - state.y;
+    bool teleport = hasPrev && (dx * dx + dy * dy >= kSnapshotTeleportSq);
+
+    if (hasPrev && !teleport) {
+        state.prevX = state.x;
+        state.prevY = state.y;
+        state.prevRotation = state.rotation;
+        state.prevSnapshotMs = state.snapshotMs;
+    } else {
+        state.prevX = newX;
+        state.prevY = newY;
+        state.prevRotation = newRotation;
+        state.prevSnapshotMs = snapTime - (1000.0 / syncSendHzSetting());
+    }
+
+    state.x = newX;
+    state.y = newY;
+    state.rotation = newRotation;
+    state.snapshotMs = snapTime;
+
+    if (isFull) {
+        state.iconId = static_cast<int>(root["iconId"].asInt().unwrapOr(1));
+        state.scale = static_cast<float>(root["scale"].asDouble().unwrapOr(1.0));
+        if (state.scale <= 0.f) state.scale = 1.f;
+        state.color1 = unpackColor(static_cast<int>(root["color1"].asInt().unwrapOr(0xFFFFFF)));
+        state.color2 = unpackColor(static_cast<int>(root["color2"].asInt().unwrapOr(0xFFFFFF)));
+    }
 }
 
 std::string GameSync::peerName(uint64_t peerId) const {

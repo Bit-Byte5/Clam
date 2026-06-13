@@ -25,9 +25,6 @@ private:
         float x = 0.f;
         float y = 0.f;
         float rotation = 0.f;
-        float targetX = 0.f;
-        float targetY = 0.f;
-        float targetRotation = 0.f;
         bool positioned = false;
     };
 
@@ -36,8 +33,7 @@ private:
     void removeGhost(PlayLayer* layer, uint64_t peerId);
     void applyScale(GhostEntry& entry, float scale);
     void applyColors(GhostEntry& entry, cocos2d::ccColor3B const& color1, cocos2d::ccColor3B const& color2);
-    void setTarget(GhostEntry& entry, RemotePeerState const& state);
-    void applySmoothing(GhostEntry& entry, float dt);
+    void applyInterpolatedPosition(GhostEntry& entry, RemotePeerState const& state, float dt);
     SimplePlayer* ensureGhost(PlayLayer* layer, RemotePeerState const& state, GhostEntry*& outEntry);
 };
 

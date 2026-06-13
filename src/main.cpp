@@ -24,12 +24,17 @@ class $modify(ClamMenuLayer, MenuLayer) {
     bool init() {
         if (!MenuLayer::init()) return false;
 
+        auto* icon = CCSprite::createWithSpriteFrameName("clam_menu_icon.png"_spr);
+        if (!icon) {
+            icon = CCSprite::createWithSpriteFrameName("GJ_playGameBtn_001.png");
+        }
+
         auto* btn = CCMenuItemSpriteExtra::create(
-            CCSprite::createWithSpriteFrameName("GJ_playGameBtn_001.png"),
+            icon,
             this,
             menu_selector(ClamMenuLayer::onClam)
         );
-        btn->setScale(0.65f);
+        btn->setScale(0.4f);
         btn->setID("clam-menu-btn"_spr);
 
         if (auto* menu = this->getChildByID("bottom-menu")) {
@@ -37,7 +42,13 @@ class $modify(ClamMenuLayer, MenuLayer) {
             menu->updateLayout();
         }
 
+        this->schedule(schedule_selector(ClamMenuLayer::onClamTick), 0.25f);
+
         return true;
+    }
+
+    void onClamTick(float dt) {
+        clam::NetSession::get().tick(dt);
     }
 
     void onClam(CCObject*) {

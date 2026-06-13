@@ -2,10 +2,11 @@
 
 #include "LanDiscovery.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
-#include <string>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace clam {
@@ -34,8 +35,11 @@ public:
     bool join(std::string const& host, int port, std::string const& playerName);
     void stop();
 
+    void tick(float dt);
+
     SessionRole role() const;
     bool isActive() const;
+    bool isReconnecting() const;
     int port() const;
     int hostLevelId() const;
     std::string hostAddress() const;
@@ -47,6 +51,7 @@ public:
 
     void startLanBrowser();
     void stopLanBrowser();
+    void invalidateNearbyCache();
 
     void hostEnteredLevel(int levelId);
     void hostLeftLevel();
@@ -59,11 +64,22 @@ public:
 private:
     NetSession() = default;
 
+    bool startClientTransport(std::string const& host, int port, std::string const& playerName);
+    void stopClientTransport();
+    void sendPing();
+    void noteHostAlive();
+    void onClientTransportOpen();
+    void onClientTransportLost(bool unexpected);
+    void beginReconnect();
+    void tryReconnect();
+
     void setPeers(std::vector<PeerInfo> peers);
     void queueSetPeers(std::vector<PeerInfo> peers);
     void handleLobbyMessage(std::string const& payload);
     void updateLanBroadcast();
     int lobbyPlayerCountLocked() const;
+
+    static int64_t nowMs();
 
     mutable std::mutex m_mutex;
     SessionRole m_role = SessionRole::None;
@@ -78,11 +94,32 @@ private:
     mutable std::mutex m_nearbyMutex;
     mutable std::vector<DiscoveredGame> m_nearbyCache;
     mutable std::string m_nearbyFingerprint;
+
+    std::string m_reconnectHost;
+    int m_reconnectPort = 0;
+
+    std::atomic<int64_t> m_lastHostAliveMs{0};
+    std::atomic<bool> m_clientConnected{false};
+    std::atomic<bool> m_pendingReconnect{false};
+    std::atomic<bool> m_reconnecting{false};
+    std::atomic<bool> m_stopping{false};
+
+    float m_pingTimer = 0.f;
+    float m_reconnectDelay = 0.f;
+    int m_reconnectAttempts = 0;
+    uint64_t m_pingSeq = 0;
+
+    static constexpr float kPingInterval = 3.f;
+    static constexpr float kPongTimeout = 9.f;
+    static constexpr float kReconnectDelay = 2.f;
+    static constexpr int kMaxReconnectAttempts = 3;
 };
 
 std::string localPlayerName();
 int wsPortSetting();
 int discoveryPortSetting();
 bool shareUsernameSetting();
+int syncSendHzSetting();
+int interpolationDelayMsSetting();
 
 } // namespace clam

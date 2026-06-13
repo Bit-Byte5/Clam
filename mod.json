@@ -8,9 +8,14 @@
 	},
 	"id": "paxcirlot.clam",
 	"name": "Clam",
-	"version": "1.1.4",
+	"version": "1.1.6",
 	"developer": "PaxCirlot",
 	"description": "Play Geometry Dash with friends.",
+	"resources": {
+		"sprites": [
+			"resources/clam_menu_icon.png"
+		]
+	},
 	"dependencies": {
 		"geode.node-ids": ">=v1.23.3"
 	},
@@ -36,6 +41,22 @@
 			"name": "Share Username on LAN",
 			"description": "Broadcast your Geometry Dash username to nearby players. Disable to show as Player.",
 			"default": true
+		},
+		"sync-send-hz": {
+			"type": "int",
+			"name": "Position Send Rate (Hz)",
+			"description": "How often your position is sent to other players. Higher = snappier ghosts, more network traffic.",
+			"default": 30,
+			"min": 15,
+			"max": 60
+		},
+		"interpolation-delay-ms": {
+			"type": "int",
+			"name": "Ghost Interpolation Delay (ms)",
+			"description": "Render buffer for remote ghosts. Lower = snappier, higher = smoother.",
+			"default": 35,
+			"min": 0,
+			"max": 80
 		}
 	}
 }

@@ -53,6 +53,27 @@ inline std::string makeLevelEnd(uint64_t peerId, int levelId) {
     }).dump();
 }
 
+inline std::string makePlayerStateLite(
+    uint64_t peerId,
+    int levelId,
+    float x,
+    float y,
+    float rotation,
+    bool dead,
+    int64_t timeMs
+) {
+    return matjson::makeObject({
+        {"type", "player_state"},
+        {"peerId", peerId},
+        {"levelId", levelId},
+        {"x", x},
+        {"y", y},
+        {"rotation", rotation},
+        {"dead", dead},
+        {"t", timeMs},
+    }).dump();
+}
+
 inline std::string makePlayerState(
     uint64_t peerId,
     int levelId,
@@ -63,7 +84,8 @@ inline std::string makePlayerState(
     int iconId,
     float scale,
     cocos2d::ccColor3B const& color1,
-    cocos2d::ccColor3B const& color2
+    cocos2d::ccColor3B const& color2,
+    int64_t timeMs
 ) {
     return matjson::makeObject({
         {"type", "player_state"},
@@ -77,11 +99,30 @@ inline std::string makePlayerState(
         {"scale", scale},
         {"color1", packColor(color1)},
         {"color2", packColor(color2)},
+        {"t", timeMs},
     }).dump();
 }
 
 inline bool isLobbyMessageType(std::string const& type) {
     return type == "hello" || type == "lobby";
+}
+
+inline bool isControlMessageType(std::string const& type) {
+    return isLobbyMessageType(type) || type == "ping" || type == "pong";
+}
+
+inline std::string makePing(uint64_t seq) {
+    return matjson::makeObject({
+        {"type", "ping"},
+        {"seq", seq},
+    }).dump();
+}
+
+inline std::string makePong(uint64_t seq) {
+    return matjson::makeObject({
+        {"type", "pong"},
+        {"seq", seq},
+    }).dump();
 }
 
 } // namespace clam

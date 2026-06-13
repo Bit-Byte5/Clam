@@ -196,6 +196,10 @@ void LanDiscovery::pruneStaleLocked(int64_t now) {
 }
 
 void LanDiscovery::startBrowser(int discoveryPort) {
+    if (m_listening.load() && m_discoveryPort == discoveryPort) {
+        return;
+    }
+
     stopBrowser();
 
     if (!initSockets()) {

@@ -107,6 +107,23 @@ Copy the file to:
 
 Then restart the game.
 
+### Option D — Mocha Modding (saltmine.me)
+
+After a **GitHub Release** tag (universal cross-platform `.geode`):
+
+```bash
+./scripts/fetch-release-geode.sh 1.1.6
+PLATFORM=universal ./scripts/deploy-mocha.sh build/release/paxcirlot.clam.geode
+```
+
+Or one command (commit, tag, push, wait for CI, download, upload universal):
+
+```bash
+./scripts/release-and-deploy.sh
+```
+
+Always upload the **universal** build (`PLATFORM=universal`) so Windows, macOS, Android, and iOS are covered in one package. Local `geode build` on Mac only produces a macOS binary — use the release artifact for Mocha.
+
 ---
 
 ## Geode Index (public / beta)

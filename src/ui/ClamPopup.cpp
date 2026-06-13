@@ -11,6 +11,12 @@ namespace clam {
 
 namespace {
 
+constexpr float kMaxPopupWidth = 320.f;
+constexpr float kMaxPopupHeight = 240.f;
+constexpr float kHeaderHeight = 78.f;
+constexpr float kFooterHeight = 36.f;
+constexpr float kMinScrollHeight = 64.f;
+
 std::string fingerprintGames(std::vector<DiscoveredGame> const& games) {
     std::string out;
     for (auto const& game : games) {
@@ -40,30 +46,38 @@ ClamPopup* ClamPopup::create() {
 }
 
 bool ClamPopup::init() {
-    if (!Popup::init(380.f, 300.f)) return false;
+    auto const win = CCDirector::get()->getWinSize();
+    auto const popupW = std::min(kMaxPopupWidth, win.width * 0.9f);
+    auto const popupH = std::min(kMaxPopupHeight, win.height * 0.72f);
+
+    m_scrollWidth = popupW - 40.f;
+    m_nearbyScrollHeight = std::max(kMinScrollHeight, popupH - kHeaderHeight - kFooterHeight);
+    m_consoleScrollHeight = 28.f;
+
+    if (!Popup::init(popupW, popupH)) return false;
 
     setTitle("Clam");
 
     m_mainLayer->setLayout(AnchorLayout::create());
 
     m_statusLabel = CCLabelBMFont::create("Tap Host, then play a level", "chatFont.fnt");
-    m_statusLabel->setScale(0.42f);
+    m_statusLabel->setScale(0.38f);
     m_statusLabel->setAnchorPoint({0.5f, 1.f});
     m_statusLabel->setID("status-label"_spr);
-    m_mainLayer->addChildAtPosition(m_statusLabel, Anchor::Top, ccp(0.f, -36.f));
+    m_mainLayer->addChildAtPosition(m_statusLabel, Anchor::Top, ccp(0.f, -28.f));
 
     auto* buttonMenu = CCMenu::create();
     buttonMenu->setLayout(RowLayout::create()->setGap(8.f));
-    m_mainLayer->addChildAtPosition(buttonMenu, Anchor::Top, ccp(0.f, -68.f));
+    m_mainLayer->addChildAtPosition(buttonMenu, Anchor::Top, ccp(0.f, -46.f));
 
     auto hostBtn = CCMenuItemExt::createSpriteExtra(
-        ButtonSprite::create("Host", "goldFont.fnt", "GJ_button_01.png", .8f),
+        ButtonSprite::create("Host", "goldFont.fnt", "GJ_button_01.png", .75f),
         [this](CCMenuItemSpriteExtra*) { onHost(nullptr); }
     );
     hostBtn->setID("host-btn"_spr);
 
     auto stopBtn = CCMenuItemExt::createSpriteExtra(
-        ButtonSprite::create("Stop", "goldFont.fnt", "GJ_button_04.png", .8f),
+        ButtonSprite::create("Stop", "goldFont.fnt", "GJ_button_04.png", .75f),
         [this](CCMenuItemSpriteExtra*) { onStop(nullptr); }
     );
     stopBtn->setID("stop-btn"_spr);
@@ -73,36 +87,42 @@ bool ClamPopup::init() {
     buttonMenu->updateLayout();
 
     m_peerLabel = CCLabelBMFont::create("", "chatFont.fnt");
-    m_peerLabel->setScale(0.4f);
+    m_peerLabel->setScale(0.36f);
     m_peerLabel->setAnchorPoint({0.5f, 1.f});
     m_peerLabel->setID("peer-label"_spr);
-    m_mainLayer->addChildAtPosition(m_peerLabel, Anchor::Top, ccp(0.f, -96.f));
+    m_mainLayer->addChildAtPosition(m_peerLabel, Anchor::Top, ccp(0.f, -62.f));
 
     auto* nearbyLabel = CCLabelBMFont::create("Nearby players", "chatFont.fnt");
-    nearbyLabel->setScale(0.42f);
+    nearbyLabel->setScale(0.38f);
     nearbyLabel->setAnchorPoint({0.f, 1.f});
     nearbyLabel->setID("nearby-label"_spr);
-    m_mainLayer->addChildAtPosition(nearbyLabel, Anchor::Top, ccp(-150.f, -118.f));
+    m_mainLayer->addChildAtPosition(
+        nearbyLabel,
+        Anchor::Top,
+        ccp(-m_scrollWidth * 0.5f + 4.f, -74.f)
+    );
 
-    m_nearbyScroll = ScrollLayer::create({320.f, 78.f});
+    m_nearbyScroll = ScrollLayer::create({m_scrollWidth, m_nearbyScrollHeight});
     m_nearbyScroll->setID("nearby-scroll"_spr);
-    m_mainLayer->addChildAtPosition(m_nearbyScroll, Anchor::Top, ccp(0.f, -132.f));
+    m_mainLayer->addChildAtPosition(m_nearbyScroll, Anchor::Top, ccp(0.f, -86.f));
 
-    auto* scroll = ScrollLayer::create({320.f, 72.f});
+    auto* scroll = ScrollLayer::create({m_scrollWidth, m_consoleScrollHeight});
     scroll->setID("console-scroll"_spr);
-    m_mainLayer->addChildAtPosition(scroll, Anchor::Bottom, ccp(0.f, 28.f));
+    m_mainLayer->addChildAtPosition(scroll, Anchor::Bottom, ccp(0.f, 8.f));
 
     m_consoleLabel = CCLabelBMFont::create("", "chatFont.fnt");
-    m_consoleLabel->setScale(0.36f);
+    m_consoleLabel->setScale(0.32f);
     m_consoleLabel->setAnchorPoint({0.f, 1.f});
     m_consoleLabel->setAlignment(kCCTextAlignmentLeft);
     m_consoleLabel->setID("console-label"_spr);
     scroll->m_contentLayer->addChild(m_consoleLabel);
-    scroll->m_contentLayer->setContentSize({320.f, 72.f});
+    scroll->m_contentLayer->setContentSize({m_scrollWidth, m_consoleScrollHeight});
 
     m_consoleText = "> Clam ready\n";
     m_consoleLabel->setString(m_consoleText.c_str());
 
+    m_nearbyFingerprint.clear();
+    NetSession::get().invalidateNearbyCache();
     NetSession::get().startLanBrowser();
     rebuildNearbyGames();
     this->schedule(schedule_selector(ClamPopup::onTick), 0.25f);
@@ -159,7 +179,7 @@ void ClamPopup::rebuildNearbyGames() {
         label->setAlignment(kCCTextAlignmentLeft);
         label->setID("nearby-empty"_spr);
         m_nearbyScroll->m_contentLayer->addChildAtPosition(label, Anchor::Left, ccp(4.f, 0.f));
-        m_nearbyScroll->m_contentLayer->setContentSize({320.f, 78.f});
+        m_nearbyScroll->m_contentLayer->setContentSize({m_scrollWidth, m_nearbyScrollHeight});
         return;
     }
 
@@ -175,10 +195,10 @@ void ClamPopup::rebuildNearbyGames() {
         );
 
         auto* row = CCMenu::create();
-        row->setContentSize({310.f, 22.f});
+        row->setContentSize({m_scrollWidth - 10.f, 20.f});
 
         auto* joinBtn = CCMenuItemExt::createSpriteExtra(
-            ButtonSprite::create(label.c_str(), "goldFont.fnt", "GJ_button_01.png", .55f),
+            ButtonSprite::create(label.c_str(), "goldFont.fnt", "GJ_button_01.png", .5f),
             [this, game](CCMenuItemSpriteExtra*) { joinDiscovered(game); }
         );
         joinBtn->setID(fmt::format("join-{}-{}", game.hostAddress, game.wsPort).c_str());
@@ -189,8 +209,8 @@ void ClamPopup::rebuildNearbyGames() {
     }
 
     m_nearbyScroll->m_contentLayer->updateLayout();
-    auto height = std::max(78.f, m_nearbyScroll->m_contentLayer->getContentHeight() + 4.f);
-    m_nearbyScroll->m_contentLayer->setContentSize({320.f, height});
+    auto height = std::max(m_nearbyScrollHeight, m_nearbyScroll->m_contentLayer->getContentHeight() + 4.f);
+    m_nearbyScroll->m_contentLayer->setContentSize({m_scrollWidth, height});
     m_nearbyScroll->scrollToTop();
 }
 
@@ -216,7 +236,7 @@ void ClamPopup::appendConsole(std::string const& line) {
         m_consoleLabel->setString(m_consoleText.c_str());
         auto size = m_consoleLabel->getContentSize();
         if (auto* scroll = typeinfo_cast<ScrollLayer*>(m_mainLayer->getChildByID("console-scroll"_spr))) {
-            scroll->m_contentLayer->setContentSize({320.f, std::max(72.f, size.height + 8.f)});
+            scroll->m_contentLayer->setContentSize({m_scrollWidth, std::max(m_consoleScrollHeight, size.height + 8.f)});
             scroll->scrollToTop();
         }
     }
@@ -239,7 +259,11 @@ void ClamPopup::refreshUI() {
                 break;
             }
             case SessionRole::Client:
-                m_statusLabel->setString("Connected — play the same level");
+                if (session.isReconnecting()) {
+                    m_statusLabel->setString("Reconnecting to host...");
+                } else {
+                    m_statusLabel->setString("Connected — play the same level");
+                }
                 break;
             default:
                 m_statusLabel->setString("Tap Host, then play a level");
@@ -251,7 +275,9 @@ void ClamPopup::refreshUI() {
         auto peers = session.getPeers();
         if (peers.empty() || session.role() == SessionRole::None) {
             m_peerLabel->setString("");
+            m_peerLabel->setVisible(false);
         } else {
+            m_peerLabel->setVisible(true);
             std::string text = "With: ";
             for (size_t i = 0; i < peers.size(); ++i) {
                 if (i > 0) text += ", ";

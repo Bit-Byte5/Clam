@@ -23,6 +23,9 @@ struct RemotePeerState {
     float x = 0.f;
     float y = 0.f;
     float rotation = 0.f;
+    float prevX = 0.f;
+    float prevY = 0.f;
+    float prevRotation = 0.f;
     bool dead = false;
     int iconId = 1;
     float scale = 1.f;
@@ -30,6 +33,8 @@ struct RemotePeerState {
     cocos2d::ccColor3B color2{255, 255, 255};
     bool inLevel = false;
     double lastSeenMs = 0.0;
+    double snapshotMs = 0.0;
+    double prevSnapshotMs = 0.0;
 };
 
 struct LocalPlayerSnapshot {
@@ -43,6 +48,8 @@ struct LocalPlayerSnapshot {
     float scale = 1.f;
     cocos2d::ccColor3B color1{255, 255, 255};
     cocos2d::ccColor3B color2{255, 255, 255};
+    int64_t snapshotMs = 0;
+    bool forceFull = false;
 };
 
 class GameSync {
@@ -91,9 +98,11 @@ private:
     void handleMessage(std::string const& payload);
     void applyPlayerState(matjson::Value const& root);
     void sendPlayerState(LocalPlayerSnapshot const& snapshot);
+    bool cosmeticsChanged(LocalPlayerSnapshot const& snapshot) const;
     std::string peerName(uint64_t peerId) const;
     int localIconId() const;
     void clearRemoteState();
+    float sendIntervalSeconds() const;
 
     std::thread m_worker;
     std::atomic<bool> m_workerRunning{false};
@@ -109,6 +118,9 @@ private:
     int m_localLevelId = 0;
     bool m_inLevel = false;
     float m_sendTimer = 0.f;
+    float m_fullRefreshTimer = 0.f;
+    bool m_hasLastSentSnapshot = false;
+    LocalPlayerSnapshot m_lastSentSnapshot;
 };
 
 } // namespace clam
