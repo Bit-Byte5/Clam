@@ -1,3 +1,8 @@
+# 1.1.1
+
+- Fix LAN discovery on Linux: broadcast to subnet addresses so Mac/Windows can find Linux hosts
+- Clearer empty-state hint when no nearby players are in a level
+
 # 1.1.0
 
 - Ghost avatars: see connected peers on main campaign levels 1–22 (classic mode)

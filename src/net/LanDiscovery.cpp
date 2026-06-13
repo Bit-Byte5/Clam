@@ -7,6 +7,8 @@
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -23,6 +25,7 @@
 #include <chrono>
 #include <cstring>
 #include <thread>
+#include <vector>
 
 using namespace geode::prelude;
 
@@ -101,6 +104,65 @@ bool parseBeacon(
     players = static_cast<int>(root["players"].asInt().unwrapOr(1));
     levelId = static_cast<int>(root["levelId"].asInt().unwrapOr(0));
     return wsPort > 0;
+}
+
+std::vector<uint32_t> collectBroadcastTargets() {
+    std::vector<uint32_t> targets;
+    auto addTarget = [&](uint32_t addr) {
+        if (addr == 0) return;
+        for (auto existing : targets) {
+            if (existing == addr) return;
+        }
+        targets.push_back(addr);
+    };
+
+    addTarget(htonl(INADDR_BROADCAST));
+
+#ifndef _WIN32
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) == 0) {
+        for (auto* iface = interfaces; iface != nullptr; iface = iface->ifa_next) {
+            if (!iface->ifa_addr || iface->ifa_addr->sa_family != AF_INET) continue;
+            if (!(iface->ifa_flags & IFF_UP)) continue;
+            if (iface->ifa_flags & IFF_LOOPBACK) continue;
+            if (!iface->ifa_netmask) continue;
+
+            auto* addr = reinterpret_cast<sockaddr_in*>(iface->ifa_addr);
+            auto* mask = reinterpret_cast<sockaddr_in*>(iface->ifa_netmask);
+            addTarget(addr->sin_addr.s_addr | ~mask->sin_addr.s_addr);
+        }
+        freeifaddrs(interfaces);
+    }
+#endif
+
+    return targets;
+}
+
+void sendBeaconToTargets(
+    socket_t sock,
+    int discoveryPort,
+    std::string const& payload,
+    std::vector<uint32_t> const& targets
+) {
+    for (auto target : targets) {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(static_cast<uint16_t>(discoveryPort));
+        addr.sin_addr.s_addr = target;
+
+        auto sent = sendto(
+            sock,
+            payload.c_str(),
+            static_cast<int>(payload.size()),
+            0,
+            reinterpret_cast<sockaddr*>(&addr),
+            sizeof(addr)
+        );
+
+        if (sent < 0) {
+            log::warn("[Clam] LAN beacon send failed for target {}", inet_ntoa(addr.sin_addr));
+        }
+    }
 }
 
 } // namespace
@@ -265,10 +327,8 @@ void LanDiscovery::startBroadcast(
             int broadcastEnable = 1;
             setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<char*>(&broadcastEnable), sizeof(broadcastEnable));
 
-            sockaddr_in addr{};
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(static_cast<uint16_t>(m_discoveryPort));
-            addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+            auto targets = collectBroadcastTargets();
+            log::info("[Clam] LAN broadcast using {} target(s)", targets.size());
 
             while (m_broadcasting.load()) {
                 int players = 1;
@@ -282,14 +342,7 @@ void LanDiscovery::startBroadcast(
                     players,
                     m_broadcastLevelId
                 );
-                sendto(
-                    sock,
-                    payload.c_str(),
-                    static_cast<int>(payload.size()),
-                    0,
-                    reinterpret_cast<sockaddr*>(&addr),
-                    sizeof(addr)
-                );
+                sendBeaconToTargets(sock, m_discoveryPort, payload, targets);
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(kBroadcastIntervalMs));
             }

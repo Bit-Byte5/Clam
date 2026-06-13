@@ -152,11 +152,12 @@ void ClamPopup::rebuildNearbyGames() {
 
     if (games.empty()) {
         auto* label = CCLabelBMFont::create(
-            "No players in a level nearby",
+            "No players nearby — same Wi-Fi,\nhost must be in a level (1-22)",
             "chatFont.fnt"
         );
-        label->setScale(0.36f);
+        label->setScale(0.34f);
         label->setAnchorPoint({0.f, 0.5f});
+        label->setAlignment(kCCTextAlignmentLeft);
         label->setID("nearby-empty"_spr);
         m_nearbyScroll->m_contentLayer->addChildAtPosition(label, Anchor::Left, ccp(4.f, 0.f));
         m_nearbyScroll->m_contentLayer->setContentSize({320.f, 78.f});
