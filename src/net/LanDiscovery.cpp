@@ -7,11 +7,13 @@
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#if !defined(__ANDROID__)
+#include <ifaddrs.h>
+#include <net/if.h>
+#endif
 #endif
 
 #include "LanDiscovery.hpp"
@@ -118,7 +120,7 @@ std::vector<uint32_t> collectBroadcastTargets() {
 
     addTarget(htonl(INADDR_BROADCAST));
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__ANDROID__)
     ifaddrs* interfaces = nullptr;
     if (getifaddrs(&interfaces) == 0) {
         for (auto* iface = interfaces; iface != nullptr; iface = iface->ifa_next) {
