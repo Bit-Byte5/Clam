@@ -36,6 +36,7 @@ public:
     SessionRole role() const;
     bool isActive() const;
     int port() const;
+    int hostLevelId() const;
     std::string hostAddress() const;
 
     std::vector<NetEvent> drainEvents();
@@ -44,6 +45,12 @@ public:
 
     void startLanBrowser();
     void stopLanBrowser();
+
+    void hostEnteredLevel(int levelId);
+    void hostLeftLevel();
+
+    void sendGameMessage(std::string const& payload);
+    uint64_t getLocalPeerId() const;
 
     void log(std::string text);
 
@@ -60,6 +67,7 @@ private:
     int m_port = 0;
     std::string m_hostAddress;
     std::string m_localName;
+    int m_hostLevelId = 0;
     std::vector<NetEvent> m_events;
     std::vector<PeerInfo> m_peers;
 };

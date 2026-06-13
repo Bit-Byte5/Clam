@@ -70,13 +70,14 @@ bool initSockets() {
 }
 #endif
 
-std::string makeBeacon(std::string const& hostName, int wsPort, int players) {
+std::string makeBeacon(std::string const& hostName, int wsPort, int players, int levelId) {
     return matjson::makeObject({
         {"type", "clam_beacon"},
         {"protocol", kBeaconProtocol},
         {"hostName", hostName},
         {"wsPort", wsPort},
         {"players", players},
+        {"levelId", levelId},
     }).dump();
 }
 
@@ -84,7 +85,8 @@ bool parseBeacon(
     std::string const& payload,
     std::string& hostName,
     int& wsPort,
-    int& players
+    int& players,
+    int& levelId
 ) {
     auto parsed = matjson::parse(payload);
     if (!parsed) return false;
@@ -97,6 +99,7 @@ bool parseBeacon(
     hostName = root["hostName"].asString().unwrapOr("Player");
     wsPort = static_cast<int>(root["wsPort"].asInt().unwrapOr(0));
     players = static_cast<int>(root["players"].asInt().unwrapOr(1));
+    levelId = static_cast<int>(root["levelId"].asInt().unwrapOr(0));
     return wsPort > 0;
 }
 
@@ -129,10 +132,7 @@ void LanDiscovery::pruneStaleLocked(int64_t now) {
 }
 
 void LanDiscovery::startBrowser(int discoveryPort) {
-    if (m_listening.load()) {
-        if (m_discoveryPort == discoveryPort) return;
-        stopBrowser();
-    }
+    stopBrowser();
 
     if (!initSockets()) {
         log::error("[Clam] Failed to initialize sockets for LAN discovery");
@@ -193,7 +193,8 @@ void LanDiscovery::startBrowser(int discoveryPort) {
                 std::string hostName;
                 int wsPort = 0;
                 int players = 1;
-                if (!parseBeacon(buffer, hostName, wsPort, players)) continue;
+                int levelId = 0;
+                if (!parseBeacon(buffer, hostName, wsPort, players, levelId)) continue;
 
                 char ipStr[INET_ADDRSTRLEN] = {};
                 inet_ntop(AF_INET, &from.sin_addr, ipStr, sizeof(ipStr));
@@ -206,13 +207,14 @@ void LanDiscovery::startBrowser(int discoveryPort) {
                     if (game.hostAddress == hostAddress && game.wsPort == wsPort) {
                         game.hostName = hostName;
                         game.players = players;
+                        game.levelId = levelId;
                         game.lastSeenMs = seen;
                         updated = true;
                         break;
                     }
                 }
                 if (!updated) {
-                    m_games.push_back({hostName, hostAddress, wsPort, players, seen});
+                    m_games.push_back({hostName, hostAddress, wsPort, players, levelId, seen});
                 }
                 pruneStaleLocked(seen);
             }
@@ -240,7 +242,8 @@ void LanDiscovery::startBroadcast(
     int discoveryPort,
     int wsPort,
     std::string const& hostName,
-    std::function<int()> playerCount
+    std::function<int()> playerCount,
+    int levelId
 ) {
     stopBroadcast();
 
@@ -248,6 +251,7 @@ void LanDiscovery::startBroadcast(
 
     m_discoveryPort = discoveryPort;
     m_broadcastWsPort = wsPort;
+    m_broadcastLevelId = levelId;
     m_broadcastHostName = hostName;
     m_playerCount = std::move(playerCount);
     m_broadcasting.store(true);
@@ -272,7 +276,12 @@ void LanDiscovery::startBroadcast(
                     players = std::max(1, m_playerCount());
                 }
 
-                auto payload = makeBeacon(m_broadcastHostName, m_broadcastWsPort, players);
+                auto payload = makeBeacon(
+                    m_broadcastHostName,
+                    m_broadcastWsPort,
+                    players,
+                    m_broadcastLevelId
+                );
                 sendto(
                     sock,
                     payload.c_str(),

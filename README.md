@@ -17,6 +17,7 @@ Open GD → main menu → Clam button → **Host** or **Join** to test LAN WebSo
 
 | Doc | Contents |
 |-----|----------|
+| [docs/NEXT.md](docs/NEXT.md) | **Roadmap — what to build next** (security, avatars, polish) |
 | [docs/DEV-SHARING.md](docs/DEV-SHARING.md) | Build, install, and share dev `.geode` builds with friends |
 | [about.md](about.md) | In-game mod description |
 | [changelog.md](changelog.md) | Version history |

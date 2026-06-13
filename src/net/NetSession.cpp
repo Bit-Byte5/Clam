@@ -8,8 +8,8 @@
 
 #include "NetSession.hpp"
 
+#include "../game/GameSync.hpp"
 #include "LanDiscovery.hpp"
-
 #include "Protocol.hpp"
 
 #include <Geode/Geode.hpp>
@@ -75,6 +75,34 @@ void pushLobbyLocked(HostState* host) {
     }
 }
 
+bool sameConnection(connection_hdl a, connection_hdl b) {
+    auto ownerLess = std::owner_less<connection_hdl>{};
+    return !ownerLess(a, b) && !ownerLess(b, a);
+}
+
+void relayGameMessageLocked(HostState* host, connection_hdl sender, std::string const& payload) {
+    std::lock_guard sendLock(host->sendMutex);
+    for (auto const& [hdl, _] : host->peers) {
+        if (sameConnection(hdl, sender)) continue;
+        try {
+            if (!hdl.expired()) {
+                host->server->send(hdl, payload, websocketpp::frame::opcode::text);
+            }
+        } catch (...) {}
+    }
+}
+
+void broadcastGameMessageLocked(HostState* host, std::string const& payload) {
+    std::lock_guard sendLock(host->sendMutex);
+    for (auto const& [hdl, _] : host->peers) {
+        try {
+            if (!hdl.expired()) {
+                host->server->send(hdl, payload, websocketpp::frame::opcode::text);
+            }
+        } catch (...) {}
+    }
+}
+
 } // namespace
 
 NetSession& NetSession::get() {
@@ -119,6 +147,11 @@ int NetSession::port() const {
     return m_port;
 }
 
+int NetSession::hostLevelId() const {
+    std::lock_guard lock(m_mutex);
+    return m_hostLevelId;
+}
+
 std::string NetSession::hostAddress() const {
     std::lock_guard lock(m_mutex);
     return m_hostAddress;
@@ -142,18 +175,50 @@ std::vector<PeerInfo> NetSession::getPeers() const {
     return m_peers;
 }
 
+uint64_t NetSession::getLocalPeerId() const {
+    std::lock_guard lock(m_mutex);
+    if (m_role == SessionRole::Host) return 0;
+    for (auto const& peer : m_peers) {
+        if (peer.local) return peer.id;
+    }
+    return 0;
+}
+
+void NetSession::sendGameMessage(std::string const& payload) {
+    if (g_client) {
+        auto* client = g_client;
+        try {
+            std::lock_guard lock(client->sendMutex);
+            if (client->connection) {
+                client->client->send(
+                    client->connection->get_handle(),
+                    payload,
+                    websocketpp::frame::opcode::text
+                );
+            }
+        } catch (...) {}
+        return;
+    }
+
+    if (g_host) {
+        broadcastGameMessageLocked(g_host, payload);
+    }
+}
+
 void NetSession::updateLanBroadcast() {
     SessionRole sessionRole;
     std::string hostName;
     int wsPort = 0;
+    int levelId = 0;
     {
         std::lock_guard lock(m_mutex);
         sessionRole = m_role;
         hostName = m_localName;
         wsPort = m_port;
+        levelId = m_hostLevelId;
     }
 
-    if (sessionRole != SessionRole::Host) {
+    if (sessionRole != SessionRole::Host || levelId <= 0) {
         LanDiscovery::get().stopBroadcast();
         return;
     }
@@ -162,8 +227,28 @@ void NetSession::updateLanBroadcast() {
         discoveryPortSetting(),
         wsPort,
         hostName,
-        [this]() { return lobbyPlayerCountLocked(); }
+        [this]() { return lobbyPlayerCountLocked(); },
+        levelId
     );
+}
+
+void NetSession::hostEnteredLevel(int levelId) {
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_role != SessionRole::Host) return;
+        m_hostLevelId = levelId;
+    }
+    log("Now visible on LAN (level " + std::to_string(levelId) + ")");
+    updateLanBroadcast();
+}
+
+void NetSession::hostLeftLevel() {
+    {
+        std::lock_guard lock(m_mutex);
+        if (m_role != SessionRole::Host) return;
+        m_hostLevelId = 0;
+    }
+    LanDiscovery::get().stopBroadcast();
 }
 
 int NetSession::lobbyPlayerCountLocked() const {
@@ -182,16 +267,40 @@ void NetSession::stopLanBrowser() {
 
 std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
     auto games = LanDiscovery::get().getGames();
-    if (role() != SessionRole::Host) {
-        return games;
-    }
 
     games.erase(
-        std::remove_if(games.begin(), games.end(), [this](DiscoveredGame const& game) {
-            return game.wsPort == port();
+        std::remove_if(games.begin(), games.end(), [](DiscoveredGame const& game) {
+            return game.levelId <= 0;
         }),
         games.end()
     );
+
+    SessionRole sessionRole;
+    int localPort = 0;
+    std::string connectedHost;
+    {
+        std::lock_guard lock(m_mutex);
+        sessionRole = m_role;
+        localPort = m_port;
+        connectedHost = m_hostAddress;
+    }
+
+    if (sessionRole == SessionRole::Host) {
+        games.erase(
+            std::remove_if(games.begin(), games.end(), [localPort](DiscoveredGame const& game) {
+                return game.wsPort == localPort;
+            }),
+            games.end()
+        );
+    } else if (sessionRole == SessionRole::Client) {
+        games.erase(
+            std::remove_if(games.begin(), games.end(), [&](DiscoveredGame const& game) {
+                return game.hostAddress == connectedHost && game.wsPort == localPort;
+            }),
+            games.end()
+        );
+    }
+
     return games;
 }
 
@@ -261,6 +370,7 @@ bool NetSession::startHost(int port, std::string const& playerName) {
 
             if (id != 0) {
                 log("Client disconnected (#" + std::to_string(id) + ")");
+                GameSync::get().removePeer(id);
             }
 
             pushLobbyLocked(host);
@@ -282,38 +392,47 @@ bool NetSession::startHost(int port, std::string const& playerName) {
         });
 
         host->server->set_message_handler([this, host](connection_hdl hdl, WSServer::message_ptr msg) {
-            auto parsed = matjson::parse(msg->get_payload());
+            auto payload = msg->get_payload();
+            auto parsed = matjson::parse(payload);
             if (!parsed) return;
 
             auto root = parsed.unwrap();
             if (!root.isObject()) return;
-            if (root["type"].asString().unwrapOr("") != "hello") return;
+            auto type = root["type"].asString().unwrapOr("");
 
-            auto name = root["name"].asString().unwrapOr("Unknown");
-            {
-                std::lock_guard lock(host->sendMutex);
-                if (auto it = host->peers.find(hdl); it != host->peers.end()) {
-                    it->second.name = name;
+            if (type == "hello") {
+                auto name = root["name"].asString().unwrapOr("Unknown");
+                {
+                    std::lock_guard lock(host->sendMutex);
+                    if (auto it = host->peers.find(hdl); it != host->peers.end()) {
+                        it->second.name = name;
+                    }
                 }
+
+                log("<- hello from " + name);
+                pushLobbyLocked(host);
+
+                std::vector<PeerInfo> peers;
+                PeerInfo local;
+                local.id = 0;
+                local.name = m_localName;
+                local.local = true;
+                peers.push_back(local);
+
+                {
+                    std::lock_guard lock(host->sendMutex);
+                    for (auto const& [_, peer] : host->peers) {
+                        peers.push_back(peer);
+                    }
+                }
+                setPeers(std::move(peers));
+                return;
             }
 
-            log("<- hello from " + name);
-            pushLobbyLocked(host);
+            if (isLobbyMessageType(type)) return;
 
-            std::vector<PeerInfo> peers;
-            PeerInfo local;
-            local.id = 0;
-            local.name = m_localName;
-            local.local = true;
-            peers.push_back(local);
-
-            {
-                std::lock_guard lock(host->sendMutex);
-                for (auto const& [_, peer] : host->peers) {
-                    peers.push_back(peer);
-                }
-            }
-            setPeers(std::move(peers));
+            GameSync::get().queueIncoming(payload);
+            relayGameMessageLocked(host, hdl, payload);
         });
 
         host->server->listen(
@@ -343,8 +462,7 @@ bool NetSession::startHost(int port, std::string const& playerName) {
             m_peers = {{0, playerName, true}};
         }
 
-        log("Hosting on port " + std::to_string(port));
-        updateLanBroadcast();
+        log("Hosting — enter a level to appear nearby");
         return true;
     } catch (std::exception const& e) {
         log("Failed to start host: " + std::string(e.what()));
@@ -384,11 +502,27 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
         client->client->set_close_handler([this](connection_hdl) {
             log("Disconnected from host");
             setPeers({});
+            GameSync::get().onSessionStop();
         });
 
         client->client->set_message_handler([this](connection_hdl, WSClient::message_ptr msg) {
-            handleLobbyMessage(msg->get_payload());
-            log("<- lobby update (" + std::to_string(getPeers().size()) + " players)");
+            auto payload = msg->get_payload();
+            auto parsed = matjson::parse(payload);
+            if (!parsed) return;
+
+            auto root = parsed.unwrap();
+            if (!root.isObject()) return;
+            auto type = root["type"].asString().unwrapOr("");
+
+            if (type == "lobby") {
+                handleLobbyMessage(payload);
+                log("<- lobby update (" + std::to_string(getPeers().size()) + " players)");
+                return;
+            }
+
+            if (isLobbyMessageType(type)) return;
+
+            GameSync::get().queueIncoming(payload);
         });
 
         websocketpp::lib::error_code ec;
@@ -487,8 +621,11 @@ void NetSession::stop() {
         m_role = SessionRole::None;
         m_port = 0;
         m_hostAddress.clear();
+        m_hostLevelId = 0;
         m_peers.clear();
     }
+
+    GameSync::get().onSessionStop();
 
     if (wasActive) {
         log("Session stopped");

@@ -2,7 +2,6 @@
 
 #include <Geode/ui/Popup.hpp>
 #include <Geode/ui/ScrollLayer.hpp>
-#include <Geode/ui/TextInput.hpp>
 
 #include "../net/LanDiscovery.hpp"
 
@@ -15,7 +14,6 @@ protected:
     void onTick(float dt);
 
     void onHost(CCObject*);
-    void onJoin(CCObject*);
     void onStop(CCObject*);
     void joinDiscovered(DiscoveredGame const& game);
     void refreshUI();
@@ -26,7 +24,6 @@ protected:
     cocos2d::CCLabelBMFont* m_peerLabel = nullptr;
     cocos2d::CCLabelBMFont* m_consoleLabel = nullptr;
     geode::ScrollLayer* m_nearbyScroll = nullptr;
-    geode::TextInput* m_hostInput = nullptr;
 
     std::string m_consoleText;
     std::string m_nearbyFingerprint;

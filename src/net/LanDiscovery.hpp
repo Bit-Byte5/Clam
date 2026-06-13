@@ -15,6 +15,7 @@ struct DiscoveredGame {
     std::string hostAddress;
     int wsPort = 0;
     int players = 1;
+    int levelId = 0;
     int64_t lastSeenMs = 0;
 };
 
@@ -25,7 +26,13 @@ public:
     void startBrowser(int discoveryPort);
     void stopBrowser();
 
-    void startBroadcast(int discoveryPort, int wsPort, std::string const& hostName, std::function<int()> playerCount);
+    void startBroadcast(
+        int discoveryPort,
+        int wsPort,
+        std::string const& hostName,
+        std::function<int()> playerCount,
+        int levelId
+    );
     void stopBroadcast();
 
     std::vector<DiscoveredGame> getGames() const;
@@ -43,6 +50,7 @@ private:
     std::thread m_broadcastThread;
 
     int m_broadcastWsPort = 0;
+    int m_broadcastLevelId = 0;
     std::string m_broadcastHostName;
     std::function<int()> m_playerCount;
 
