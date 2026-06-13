@@ -10,7 +10,10 @@ using namespace geode::prelude;
 
 $on_mod(Loaded) {
     log::info("Clam loaded");
-    std::atexit(+[]() { clam::NetSession::get().stop(); });
+    std::atexit(+[]() {
+        clam::NetSession::get().stop();
+        clam::NetSession::get().stopLanBrowser();
+    });
 }
 
 class $modify(ClamMenuLayer, MenuLayer) {

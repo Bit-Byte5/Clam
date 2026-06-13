@@ -8,7 +8,7 @@
 	},
 	"id": "paxcirlot.clam",
 	"name": "Clam",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"developer": "PaxCirlot",
 	"description": "Play Geometry Dash with friends.",
 	"dependencies": {
@@ -22,6 +22,20 @@
 			"default": 8765,
 			"min": 1024,
 			"max": 65535
+		},
+		"discovery-port": {
+			"type": "int",
+			"name": "Discovery Port",
+			"description": "UDP port used to find nearby Clam hosts on LAN",
+			"default": 8766,
+			"min": 1024,
+			"max": 65535
+		},
+		"share-username": {
+			"type": "bool",
+			"name": "Share Username on LAN",
+			"description": "Broadcast your Geometry Dash username to nearby players. Disable to show as Player.",
+			"default": true
 		}
 	}
 }

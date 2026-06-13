@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LanDiscovery.hpp"
+
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -38,6 +40,10 @@ public:
 
     std::vector<NetEvent> drainEvents();
     std::vector<PeerInfo> getPeers() const;
+    std::vector<DiscoveredGame> getDiscoveredGames() const;
+
+    void startLanBrowser();
+    void stopLanBrowser();
 
     void log(std::string text);
 
@@ -46,6 +52,8 @@ private:
 
     void setPeers(std::vector<PeerInfo> peers);
     void handleLobbyMessage(std::string const& payload);
+    void updateLanBroadcast();
+    int lobbyPlayerCountLocked() const;
 
     mutable std::mutex m_mutex;
     SessionRole m_role = SessionRole::None;
@@ -57,5 +65,8 @@ private:
 };
 
 std::string localPlayerName();
+int wsPortSetting();
+int discoveryPortSetting();
+bool shareUsernameSetting();
 
 } // namespace clam

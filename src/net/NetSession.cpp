@@ -8,16 +8,17 @@
 
 #include "NetSession.hpp"
 
+#include "LanDiscovery.hpp"
+
 #include "Protocol.hpp"
 
 #include <Geode/Geode.hpp>
-#include <Geode/binding/GJAccountManager.hpp>
-
 #include <websocketpp/client.hpp>
 #include <websocketpp/config/asio_no_tls.hpp>
 #include <websocketpp/config/asio_no_tls_client.hpp>
 #include <websocketpp/server.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -82,12 +83,25 @@ NetSession& NetSession::get() {
 }
 
 std::string localPlayerName() {
-    if (auto* account = GJAccountManager::get()) {
-        if (!account->m_username.empty()) {
-            return account->m_username;
-        }
-    }
-    return "Player";
+    return displayPlayerName(shareUsernameSetting());
+}
+
+int wsPortSetting() {
+    auto* mod = Mod::get();
+    if (!mod) return 8765;
+    return static_cast<int>(mod->getSettingValue<int64_t>("ws-port"));
+}
+
+int discoveryPortSetting() {
+    auto* mod = Mod::get();
+    if (!mod) return 8766;
+    return static_cast<int>(mod->getSettingValue<int64_t>("discovery-port"));
+}
+
+bool shareUsernameSetting() {
+    auto* mod = Mod::get();
+    if (!mod) return true;
+    return mod->getSettingValue<bool>("share-username");
 }
 
 SessionRole NetSession::role() const {
@@ -128,9 +142,63 @@ std::vector<PeerInfo> NetSession::getPeers() const {
     return m_peers;
 }
 
+void NetSession::updateLanBroadcast() {
+    SessionRole sessionRole;
+    std::string hostName;
+    int wsPort = 0;
+    {
+        std::lock_guard lock(m_mutex);
+        sessionRole = m_role;
+        hostName = m_localName;
+        wsPort = m_port;
+    }
+
+    if (sessionRole != SessionRole::Host) {
+        LanDiscovery::get().stopBroadcast();
+        return;
+    }
+
+    LanDiscovery::get().startBroadcast(
+        discoveryPortSetting(),
+        wsPort,
+        hostName,
+        [this]() { return lobbyPlayerCountLocked(); }
+    );
+}
+
+int NetSession::lobbyPlayerCountLocked() const {
+    std::lock_guard lock(m_mutex);
+    return static_cast<int>(m_peers.size());
+}
+
+void NetSession::startLanBrowser() {
+    LanDiscovery::get().startBrowser(discoveryPortSetting());
+}
+
+void NetSession::stopLanBrowser() {
+    LanDiscovery::get().stopBroadcast();
+    LanDiscovery::get().stopBrowser();
+}
+
+std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
+    auto games = LanDiscovery::get().getGames();
+    if (role() != SessionRole::Host) {
+        return games;
+    }
+
+    games.erase(
+        std::remove_if(games.begin(), games.end(), [this](DiscoveredGame const& game) {
+            return game.wsPort == port();
+        }),
+        games.end()
+    );
+    return games;
+}
+
 void NetSession::setPeers(std::vector<PeerInfo> peers) {
     std::lock_guard lock(m_mutex);
     m_peers = std::move(peers);
+    updateLanBroadcast();
 }
 
 void NetSession::handleLobbyMessage(std::string const& payload) {
@@ -276,6 +344,7 @@ bool NetSession::startHost(int port, std::string const& playerName) {
         }
 
         log("Hosting on port " + std::to_string(port));
+        updateLanBroadcast();
         return true;
     } catch (std::exception const& e) {
         log("Failed to start host: " + std::string(e.what()));
@@ -410,6 +479,8 @@ void NetSession::stop() {
 
         delete host;
     }
+
+    LanDiscovery::get().stopBroadcast();
 
     {
         std::lock_guard lock(m_mutex);
