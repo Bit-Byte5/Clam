@@ -22,3 +22,32 @@ endif()
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 
 setup_geode_mod(${PROJECT_NAME})
+
+CPMAddPackage(
+    NAME websocketpp
+    GITHUB_REPOSITORY zaphoyd/websocketpp
+    GIT_TAG 4dfe1be
+    DOWNLOAD_ONLY YES
+)
+
+CPMAddPackage(
+    NAME asio
+    GITHUB_REPOSITORY chriskohlhoff/asio
+    GIT_TAG asio-1-24-0
+    DOWNLOAD_ONLY YES
+)
+
+if (websocketpp_ADDED)
+    add_library(websocketpp INTERFACE)
+    target_include_directories(websocketpp INTERFACE
+        ${websocketpp_SOURCE_DIR}
+        ${asio_SOURCE_DIR}/asio/include
+    )
+    target_compile_definitions(websocketpp INTERFACE
+        ASIO_STANDALONE
+        _WEBSOCKETPP_CPP11_STL_
+        _WEBSOCKETPP_CPP11_FUNCTIONAL_
+    )
+endif()
+
+target_link_libraries(${PROJECT_NAME} websocketpp)

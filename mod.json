@@ -13,5 +13,15 @@
 	"description": "Play Geometry Dash with friends.",
 	"dependencies": {
 		"geode.node-ids": ">=v1.23.3"
+	},
+	"settings": {
+		"ws-port": {
+			"type": "int",
+			"name": "WebSocket Port",
+			"description": "Port for LAN game sessions",
+			"default": 8765,
+			"min": 1024,
+			"max": 65535
+		}
 	}
 }
