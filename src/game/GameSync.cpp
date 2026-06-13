@@ -34,14 +34,38 @@ void GameSync::queueIncoming(std::string const& payload) {
 
 void GameSync::drainIncoming() {
     std::vector<std::string> batch;
+    bool sessionStop = false;
+    std::vector<uint64_t> removePeers;
     {
         std::lock_guard lock(m_mutex);
         batch = std::move(m_inbound);
+        sessionStop = m_pendingSessionStop;
+        m_pendingSessionStop = false;
+        removePeers = std::move(m_pendingRemovePeers);
+        m_pendingRemovePeers.clear();
     }
 
     for (auto const& payload : batch) {
         handleMessage(payload);
     }
+
+    for (auto peerId : removePeers) {
+        removePeer(peerId);
+    }
+
+    if (sessionStop) {
+        onSessionStop();
+    }
+}
+
+void GameSync::queueRemovePeer(uint64_t peerId) {
+    std::lock_guard lock(m_mutex);
+    m_pendingRemovePeers.push_back(peerId);
+}
+
+void GameSync::queueSessionStop() {
+    std::lock_guard lock(m_mutex);
+    m_pendingSessionStop = true;
 }
 
 void GameSync::onLevelEnter(int levelId) {

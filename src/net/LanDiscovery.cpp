@@ -329,6 +329,14 @@ void LanDiscovery::startBroadcast(
             int broadcastEnable = 1;
             setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<char*>(&broadcastEnable), sizeof(broadcastEnable));
 
+            sockaddr_in bindAddr{};
+            bindAddr.sin_family = AF_INET;
+            bindAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+            bindAddr.sin_port = htons(0);
+            if (bind(sock, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) != 0) {
+                log::warn("[Clam] LAN broadcast bind failed — beacons may not leave this machine");
+            }
+
             auto targets = collectBroadcastTargets();
             log::info("[Clam] LAN broadcast using {} target(s)", targets.size());
 

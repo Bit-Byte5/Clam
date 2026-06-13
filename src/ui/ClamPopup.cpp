@@ -1,5 +1,6 @@
 #include "ClamPopup.hpp"
 
+#include "../game/GameSync.hpp"
 #include "../net/NetSession.hpp"
 
 #include <Geode/binding/ButtonSprite.hpp>
@@ -113,7 +114,6 @@ bool ClamPopup::init() {
 
 void ClamPopup::onClose(CCObject*) {
     this->unschedule(schedule_selector(ClamPopup::onTick));
-    NetSession::get().stopLanBrowser();
     Popup::onClose(nullptr);
 }
 
@@ -265,6 +265,8 @@ void ClamPopup::refreshUI() {
 }
 
 void ClamPopup::onTick(float) {
+    GameSync::get().drainIncoming();
+
     auto events = NetSession::get().drainEvents();
     for (auto const& event : events) {
         appendConsole(event.text);

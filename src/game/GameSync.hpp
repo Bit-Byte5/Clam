@@ -38,6 +38,8 @@ public:
 
     std::vector<RemotePeerState> getRemoteStates(int levelId) const;
     void removePeer(uint64_t peerId);
+    void queueRemovePeer(uint64_t peerId);
+    void queueSessionStop();
 
 private:
     GameSync() = default;
@@ -52,7 +54,9 @@ private:
     std::unordered_map<uint64_t, RemotePeerState> m_remotes;
     int m_localLevelId = 0;
     bool m_inLevel = false;
+    bool m_pendingSessionStop = false;
     float m_sendTimer = 0.f;
+    std::vector<uint64_t> m_pendingRemovePeers;
 };
 
 } // namespace clam

@@ -1,3 +1,10 @@
+# 1.1.2
+
+- Fix hang/crash when a client joins while the host is in a level (mutex deadlock in lobby updates)
+- Process disconnects on the main thread instead of the WebSocket thread
+- Keep LAN discovery running while the game is open (not only when the Clam popup is open)
+- Linux: bind the broadcast socket so beacons route correctly to other machines
+
 # 1.1.1
 
 - Fix LAN discovery on Linux: broadcast to subnet addresses so Mac/Windows can find Linux hosts

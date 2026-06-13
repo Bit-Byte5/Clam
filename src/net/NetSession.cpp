@@ -305,8 +305,10 @@ std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
 }
 
 void NetSession::setPeers(std::vector<PeerInfo> peers) {
-    std::lock_guard lock(m_mutex);
-    m_peers = std::move(peers);
+    {
+        std::lock_guard lock(m_mutex);
+        m_peers = std::move(peers);
+    }
     updateLanBroadcast();
 }
 
@@ -370,7 +372,7 @@ bool NetSession::startHost(int port, std::string const& playerName) {
 
             if (id != 0) {
                 log("Client disconnected (#" + std::to_string(id) + ")");
-                GameSync::get().removePeer(id);
+                GameSync::get().queueRemovePeer(id);
             }
 
             pushLobbyLocked(host);
@@ -502,7 +504,7 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
         client->client->set_close_handler([this](connection_hdl) {
             log("Disconnected from host");
             setPeers({});
-            GameSync::get().onSessionStop();
+            GameSync::get().queueSessionStop();
         });
 
         client->client->set_message_handler([this](connection_hdl, WSClient::message_ptr msg) {
