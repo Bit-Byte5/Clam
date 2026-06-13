@@ -8,8 +8,6 @@ else()
 endif()
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
-set(GEODE_DISABLE_PRECOMPILED_HEADERS ON)
-
 project(Clam VERSION 1.0.0)
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
@@ -53,3 +51,12 @@ if (websocketpp_ADDED)
 endif()
 
 target_link_libraries(${PROJECT_NAME} websocketpp)
+
+if (WIN32)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE WIN32_LEAN_AND_MEAN)
+    if (MSVC)
+        target_compile_options(${PROJECT_NAME} PRIVATE /FIwinsock2.h)
+    else()
+        target_compile_options(${PROJECT_NAME} PRIVATE -include winsock2.h)
+    endif()
+endif()
