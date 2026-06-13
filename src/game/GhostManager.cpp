@@ -5,7 +5,7 @@ using namespace geode::prelude;
 namespace clam {
 
 void GhostManager::sync(PlayLayer* layer, std::vector<RemotePeerState> const& states) {
-    if (!layer || !layer->m_objectLayer) return;
+    if (!layer || !layer->m_objectLayer || !layer->m_player1) return;
 
     std::unordered_map<uint64_t, bool> seen;
 

@@ -1,3 +1,7 @@
+# 1.1.3
+
+- Fix Mac crash when a client joins: stop restarting LAN broadcast on every lobby update (join/disconnect)
+
 # 1.1.2
 
 - Fix hang/crash when a client joins while the host is in a level (mutex deadlock in lobby updates)

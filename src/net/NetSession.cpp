@@ -305,11 +305,8 @@ std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
 }
 
 void NetSession::setPeers(std::vector<PeerInfo> peers) {
-    {
-        std::lock_guard lock(m_mutex);
-        m_peers = std::move(peers);
-    }
-    updateLanBroadcast();
+    std::lock_guard lock(m_mutex);
+    m_peers = std::move(peers);
 }
 
 void NetSession::handleLobbyMessage(std::string const& payload) {
