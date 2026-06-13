@@ -268,13 +268,6 @@ void NetSession::stopLanBrowser() {
 std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
     auto games = LanDiscovery::get().getGames();
 
-    games.erase(
-        std::remove_if(games.begin(), games.end(), [](DiscoveredGame const& game) {
-            return game.levelId <= 0;
-        }),
-        games.end()
-    );
-
     SessionRole sessionRole;
     int localPort = 0;
     std::string connectedHost;
@@ -284,6 +277,38 @@ std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
         localPort = m_port;
         connectedHost = m_hostAddress;
     }
+
+    std::string fingerprint;
+    fingerprint.reserve(games.size() * 48 + 32);
+    for (auto const& game : games) {
+        fingerprint += game.hostAddress;
+        fingerprint += ':';
+        fingerprint += std::to_string(game.wsPort);
+        fingerprint += '|';
+        fingerprint += std::to_string(game.levelId);
+        fingerprint += '|';
+        fingerprint += std::to_string(game.players);
+        fingerprint += ';';
+    }
+    fingerprint += std::to_string(static_cast<int>(sessionRole));
+    fingerprint += ':';
+    fingerprint += std::to_string(localPort);
+    fingerprint += ':';
+    fingerprint += connectedHost;
+
+    {
+        std::lock_guard lock(m_nearbyMutex);
+        if (fingerprint == m_nearbyFingerprint) {
+            return m_nearbyCache;
+        }
+    }
+
+    games.erase(
+        std::remove_if(games.begin(), games.end(), [](DiscoveredGame const& game) {
+            return game.levelId <= 0;
+        }),
+        games.end()
+    );
 
     if (sessionRole == SessionRole::Host) {
         games.erase(
@@ -301,12 +326,35 @@ std::vector<DiscoveredGame> NetSession::getDiscoveredGames() const {
         );
     }
 
-    return games;
+    {
+        std::lock_guard lock(m_nearbyMutex);
+        m_nearbyCache = games;
+        m_nearbyFingerprint = std::move(fingerprint);
+        return m_nearbyCache;
+    }
 }
 
 void NetSession::setPeers(std::vector<PeerInfo> peers) {
     std::lock_guard lock(m_mutex);
     m_peers = std::move(peers);
+}
+
+void NetSession::queueSetPeers(std::vector<PeerInfo> peers) {
+    std::lock_guard lock(m_mutex);
+    m_pendingPeers = std::move(peers);
+}
+
+void NetSession::drainPendingUpdates() {
+    std::optional<std::vector<PeerInfo>> peers;
+    {
+        std::lock_guard lock(m_mutex);
+        peers = std::move(m_pendingPeers);
+        m_pendingPeers.reset();
+    }
+
+    if (peers) {
+        setPeers(std::move(*peers));
+    }
 }
 
 void NetSession::handleLobbyMessage(std::string const& payload) {
@@ -328,7 +376,7 @@ void NetSession::handleLobbyMessage(std::string const& payload) {
         peers.push_back(std::move(peer));
     }
 
-    setPeers(std::move(peers));
+    queueSetPeers(std::move(peers));
 }
 
 bool NetSession::startHost(int port, std::string const& playerName) {
@@ -386,7 +434,7 @@ bool NetSession::startHost(int port, std::string const& playerName) {
                 local.name = session->m_localName;
                 local.local = true;
                 peers.insert(peers.begin(), local);
-                session->setPeers(std::move(peers));
+                session->queueSetPeers(std::move(peers));
             }
         });
 
@@ -424,7 +472,7 @@ bool NetSession::startHost(int port, std::string const& playerName) {
                         peers.push_back(peer);
                     }
                 }
-                setPeers(std::move(peers));
+                queueSetPeers(std::move(peers));
                 return;
             }
 
@@ -500,7 +548,7 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
 
         client->client->set_close_handler([this](connection_hdl) {
             log("Disconnected from host");
-            setPeers({});
+            queueSetPeers({});
             GameSync::get().queueSessionStop();
         });
 
@@ -515,7 +563,7 @@ bool NetSession::join(std::string const& host, int port, std::string const& play
 
             if (type == "lobby") {
                 handleLobbyMessage(payload);
-                log("<- lobby update (" + std::to_string(getPeers().size()) + " players)");
+                log("<- lobby update");
                 return;
             }
 
@@ -622,6 +670,13 @@ void NetSession::stop() {
         m_hostAddress.clear();
         m_hostLevelId = 0;
         m_peers.clear();
+        m_pendingPeers.reset();
+    }
+
+    {
+        std::lock_guard lock(m_nearbyMutex);
+        m_nearbyCache.clear();
+        m_nearbyFingerprint.clear();
     }
 
     GameSync::get().onSessionStop();

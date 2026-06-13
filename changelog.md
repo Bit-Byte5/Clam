@@ -1,3 +1,8 @@
+# 1.1.4
+
+- GameSync worker thread: JSON parse/serialize off main thread
+- Lobby peer updates drained on main thread; cached nearby-player list
+
 # 1.1.3
 
 - Fix Mac crash when a client joins: stop restarting LAN broadcast on every lobby update (join/disconnect)

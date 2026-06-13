@@ -1,8 +1,8 @@
 # What's next for Clam
 
-Roadmap from the current LAN lobby prototype to friend multiplayer with visible avatars.
+Roadmap from the current LAN + ghost prototype toward secure friend multiplayer.
 
-**Current release:** v1.0.1 — LAN discovery, WebSocket host/join, peer list, console.
+**Current release:** v1.1.3 — LAN discovery, WebSocket lobby, ghost avatars on main 1–22.
 
 ---
 
@@ -12,11 +12,27 @@ Roadmap from the current LAN lobby prototype to friend multiplayer with visible 
 |---------|--------|
 | Clam menu on main menu | Done |
 | Host WebSocket server (`0.0.0.0:8765`) | Done |
-| Join by IP or **Nearby on LAN** | Done |
+| Join via **Nearby on LAN** (tap-to-join, no IP) | Done |
 | UDP discovery beacon (port 8766) | Done |
 | Username in beacon / hello (optional setting) | Done |
 | Peer list + event console | Done |
+| Host visible on LAN only when in a level | Done |
+| Ghost avatars on main campaign 1–22 (classic) | Done |
+| `player_state` position sync ~20 Hz | Done |
+| PlayLayer hook + `SimplePlayer` ghosts | Done |
 | Cross-platform CI + GitHub Releases | Done |
+| Persistent LAN browser (runs from mod load) | Done |
+| Linux/macOS subnet broadcast | Done |
+
+### In source, not yet released
+
+| Feature | Status |
+|---------|--------|
+| Ghost interpolation (smooth movement) | Implemented |
+| Icon scale sync (mini support) | Implemented |
+| Primary/secondary color sync | Implemented |
+
+---
 
 ## What does not work yet
 
@@ -25,14 +41,14 @@ Roadmap from the current LAN lobby prototype to friend multiplayer with visible 
 | Join authentication / room codes | Not started |
 | GD friends-only gate | Not started |
 | Encrypted WebSocket traffic | Not started |
-| In-level ghost avatars | Not started |
-| Player position / gamemode sync | Not started |
-| Start level together | Not started |
+| Gamemode / flip / ship-ufo-ball sync | Not started |
+| Glow color sync | Not started |
+| Coordinated level start (`start_level` flow) | Not started |
 | Internet play (non-LAN) | Not planned for v1 |
 
 ---
 
-## Phase 2 — Secure lobby (do this before heavy gameplay sync)
+## Phase 2 — Secure lobby (next priority)
 
 Goal: strangers on the same Wi‑Fi can't join; friends can join reliably.
 
@@ -53,49 +69,34 @@ WebSocket stays the transport. Security is added as a **handshake before lobby m
 - Mod setting: **Friends only** (default off for dev, on for release).
 - Host rejects `auth` if `accountId` is not in cached friends list.
 
-**Limitation:** account ID can be spoofed without cryptographic proof. This stops casual joins, not a determined attacker. Pair with room code.
+**Limitation:** account ID can be spoofed without cryptographic proof. Pair with room code.
 
-### 2c. Session token (optional but recommended)
+### 2c. Session token
 
 - After successful `auth`, host replies `{ type: "auth_ok", sessionToken }`.
 - All later messages include the token.
-- Host drops connections that skip auth or use invalid tokens.
 
 ### 2d. Message integrity (LAN privacy)
 
-- Derive a short **session key** from room code + nonce (or random key in `auth_ok`).
+- Derive session key from room code + nonce.
 - HMAC or AES-GCM on JSON payloads after auth.
-- Plain `ws://` on LAN is OK if payloads are encrypted at app layer.
 
-**Defer:** `wss://` until internet relay exists (needs cert/trust story).
-
-See [Security model](#security-model-summary) below.
+**Defer:** `wss://` until internet relay exists.
 
 ---
 
-## Phase 3 — See each other in a level (core multiplayer milestone)
+## Phase 3 — Gameplay polish (partially done)
 
-Goal: two friends in the same level see each other's cube/ship moving.
+Goal: ghosts look and feel like the real player.
 
-### 3a. PlayLayer hooks
-
-- Hook `PlayLayer` update tick.
-- Read local `PlayerObject`: position, rotation, gamemode, flip, mini.
-- Send `{ type: "player_state", ... }` at ~20–30 Hz on the authenticated WebSocket.
-
-### 3b. Remote ghost players
-
-- On remote `player_state`, spawn/update a **non-colliding** ghost `PlayerObject`.
-- Apply icon/colors from profile sent at auth/hello (`copyAttributes` or equivalent).
-- Interpolate between network updates to reduce jitter.
-- Remove ghost on disconnect.
-
-### 3c. Level agreement
-
-- Host picks a level in lobby → sends `{ type: "start_level", levelId, levelName }`.
-- Clients load the same level locally (each runs own physics — visual sync only for v1).
-
-**Success criteria:** two clients in the same level see each other's avatars move in real time with correct colors/icon.
+| Item | Status |
+|------|--------|
+| PlayLayer hooks + `player_state` | Done (v1.1.0) |
+| Non-colliding ghost `SimplePlayer` | Done |
+| Interpolation | In source |
+| Icon + scale + colors | In source |
+| Gamemode / flip / mini visual state | Not started |
+| `start_level` coordinated load | Not started |
 
 **Explicitly out of scope for v1:** shared death, checkpoints, 2P mechanics, object interaction.
 
@@ -103,23 +104,23 @@ Goal: two friends in the same level see each other's cube/ship moving.
 
 ## Phase 4 — Lobby polish
 
-- UI: show room code prominently on host screen.
-- UI: copy-to-clipboard for room code (where platform allows).
-- Nearby list: show room code hint or “friends only” badge.
-- Latency display per peer.
-- “Leave game” without closing GD.
-- Better empty states (“No friends nearby — share your room code”).
+- UI: show room code prominently on host screen
+- Copy-to-clipboard for room code
+- Latency display per peer
+- “Leave game” without closing GD
+- Better empty states
 
 ---
 
-## Phase 5 — Later (maybe)
+## Phase 5 — Later
 
 | Idea | Notes |
 |------|--------|
 | Internet relay | Central or host-forwarded; needs `wss://` and NAT traversal |
-| Strong account auth | RobTop session validation or Globed-style auth server |
+| Strong account auth | RobTop session validation or auth server |
 | Voice / emotes | After core sync is stable |
-| Shared 2P levels | Requires authoritative gameplay — much harder |
+| Shared 2P levels | Authoritative gameplay — much harder |
+| Broader level support | Daily/weekly/custom levels |
 | Android/iOS LAN quirks | Test discovery on mobile networks |
 
 ---
@@ -127,91 +128,98 @@ Goal: two friends in the same level see each other's cube/ship moving.
 ## Suggested build order
 
 ```
-Phase 2a  Room code auth          ← next implementation step
-Phase 2b  Friends-only setting
-Phase 2c  Session token
-Phase 3a  player_state messages
-Phase 3b  Ghost PlayerObjects
-Phase 3c  start_level flow
-Phase 4   UI polish
-Phase 2d  Payload encryption     ← optional, before public release
-Phase 5   Internet / strong auth ← only if LAN product is solid
+Release v1.1.4   Interpolation + scale + colors (ship current source)
+Phase 2a         Room code auth          ← next major feature
+Phase 2b         Friends-only setting
+Phase 2c         Session token
+Phase 3          Gamemode sync, start_level flow
+Phase 4          UI polish
+Phase 2d         Payload encryption     ← optional before public release
+Phase 5          Internet / strong auth
 ```
 
-Do **not** jump to avatar sync before Phase 2a — you'll be syncing gameplay for anyone on the LAN who clicks Join.
+Do **not** skip Phase 2 before wide public release — anyone on the LAN can join today.
 
 ---
 
 ## Security model summary
 
-| Layer | Purpose | Spoofing / MITM |
-|-------|---------|-----------------|
-| UDP beacon | Find hosts | Untrusted; identity not verified here |
-| WebSocket | Session + game data | Trusted after auth handshake |
-| Room code | Authorization | Stops random LAN joiners |
-| Friend list | Authorization (soft) | Blocks wrong accounts if not spoofed |
-| Session token | Connection binding | Stops unauthenticated WS messages |
-| App-layer crypto | Confidentiality on LAN | Helps MITM on local network |
-| `wss://` | Transport crypto | For internet deployment |
+| Layer | Purpose |
+|-------|---------|
+| UDP beacon | Find hosts (untrusted) |
+| WebSocket | Session + game data |
+| Room code | Authorization |
+| Friend list | Soft authorization |
+| Session token | Connection binding |
+| App-layer crypto | LAN confidentiality |
+| `wss://` | Internet deployment |
 
-**Username on LAN:** public GD name; toggle via **Share Username on LAN** mod setting. Never send passwords or session secrets.
+**Username on LAN:** public GD name via **Share Username on LAN** setting. Never send passwords or session secrets.
 
 ---
 
 ## Protocol sketch (target)
 
 ```
-# Discovery (UDP, untrusted)
-{ "type": "clam_beacon", "protocol": 1, "hostName", "wsPort", "players" }
+# Discovery (UDP, untrusted) — implemented
+{ "type": "clam_beacon", "protocol": 1, "hostName", "wsPort", "players", "levelId" }
 
-# Auth (WebSocket, required first)
+# Auth (WebSocket, required first) — not implemented
 → { "type": "auth", "accountId", "name", "roomCode", "nonce" }
 ← { "type": "auth_ok", "sessionToken", "sessionKey" }
 
-# Lobby (existing, gated by token)
-→ { "type": "hello", ... }
-← { "type": "lobby", "players": [...] }
+# Lobby — implemented
+→ { "type": "hello", "name" }
+← { "type": "lobby", "players": [{ "id", "name" }] }
 
-# Gameplay (Phase 3)
-→ { "type": "player_state", "x", "y", "rot", "mode", ... }
-← { "type": "start_level", "levelId", ... }
+# Gameplay — partially implemented
+→ { "type": "level_start", "peerId", "levelId" }
+→ { "type": "level_end", "peerId", "levelId" }
+→ { "type": "player_state", "peerId", "levelId", "x", "y", "rotation", "dead", "iconId", "scale", "color1", "color2" }
+← { "type": "start_level", "levelId" }   # future
 ```
+
+Full current protocol: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-## Testing checklist per phase
+## Testing checklist
 
-### Phase 2 (security)
+### Ghost sync (v1.1.x)
+
+- [x] Host + one client in same level
+- [x] Ghost visible with icon
+- [ ] Ghost colors match (after v1.1.4)
+- [ ] Movement smooth with interpolation (after v1.1.4)
+- [x] Disconnect removes ghost
+- [x] Local gameplay unaffected
+
+### Security (Phase 2)
 
 - [ ] Join without room code → rejected
 - [ ] Join with wrong code → rejected
-- [ ] Join with correct code → lobby works as today
+- [ ] Join with correct code → lobby works
 - [ ] Friends-only on → non-friend rejected
-- [ ] Friends-only off → room code alone is enough
 
-### Phase 3 (avatars)
+### LAN discovery
 
-- [ ] Host + one client in same level
-- [ ] Ghost visible with correct icon/colors
-- [ ] Movement looks smooth (interpolation)
-- [ ] Disconnect removes ghost
-- [ ] Local gameplay unaffected (ghosts don't kill you)
+- [x] Mac host visible to Linux client (subnet broadcast)
+- [x] Host not listed until in level
+- [x] Browser works without popup open
 
 ---
 
 ## Related docs
 
-- [DEV-SHARING.md](DEV-SHARING.md) — build and release dev builds
+- [ARCHITECTURE.md](ARCHITECTURE.md) — threads, modules, protocol
+- [DEV-SHARING.md](DEV-SHARING.md) — build and release
 - [../changelog.md](../changelog.md) — shipped versions
-- [Geode publishing](https://docs.geode-sdk.org/mods/publishing/) — Index when ready for public beta
 
 ---
 
 ## Release tagging reminder
 
-When a phase ships to testers:
-
 1. Bump `version` in `mod.json`
 2. Update `changelog.md`
 3. `git tag v<version> && git push origin v<version>`
-4. GitHub Actions publishes `paxcirlot.clam.geode` to Releases
+4. GitHub Actions publishes `paxcirlot.clam.geode`

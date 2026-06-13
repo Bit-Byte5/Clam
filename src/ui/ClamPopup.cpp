@@ -1,6 +1,5 @@
 #include "ClamPopup.hpp"
 
-#include "../game/GameSync.hpp"
 #include "../net/NetSession.hpp"
 
 #include <Geode/binding/ButtonSprite.hpp>
@@ -265,7 +264,7 @@ void ClamPopup::refreshUI() {
 }
 
 void ClamPopup::onTick(float) {
-    GameSync::get().drainIncoming();
+    NetSession::get().drainPendingUpdates();
 
     auto events = NetSession::get().drainEvents();
     for (auto const& event : events) {

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace clam {
@@ -41,6 +42,7 @@ public:
 
     std::vector<NetEvent> drainEvents();
     std::vector<PeerInfo> getPeers() const;
+    void drainPendingUpdates();
     std::vector<DiscoveredGame> getDiscoveredGames() const;
 
     void startLanBrowser();
@@ -58,6 +60,7 @@ private:
     NetSession() = default;
 
     void setPeers(std::vector<PeerInfo> peers);
+    void queueSetPeers(std::vector<PeerInfo> peers);
     void handleLobbyMessage(std::string const& payload);
     void updateLanBroadcast();
     int lobbyPlayerCountLocked() const;
@@ -70,6 +73,11 @@ private:
     int m_hostLevelId = 0;
     std::vector<NetEvent> m_events;
     std::vector<PeerInfo> m_peers;
+    std::optional<std::vector<PeerInfo>> m_pendingPeers;
+
+    mutable std::mutex m_nearbyMutex;
+    mutable std::vector<DiscoveredGame> m_nearbyCache;
+    mutable std::string m_nearbyFingerprint;
 };
 
 std::string localPlayerName();

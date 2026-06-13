@@ -2,6 +2,8 @@
 #include "GhostManager.hpp"
 #include "LevelGate.hpp"
 
+#include "../net/NetSession.hpp"
+
 #include <Geode/modify/PlayLayer.hpp>
 
 using namespace geode::prelude;
@@ -33,11 +35,11 @@ class $modify(ClamPlayLayer, PlayLayer) {
         if (!m_fields->clamActive) return;
         if (!isGameplayActive()) return;
 
-        auto& sync = clam::GameSync::get();
-        sync.drainIncoming();
+        clam::NetSession::get().drainPendingUpdates();
 
+        auto& sync = clam::GameSync::get();
         auto states = sync.getRemoteStates(m_fields->levelId);
-        m_fields->ghosts.sync(this, states);
+        m_fields->ghosts.sync(this, states, dt);
 
         sync.tickLocal(this, dt);
     }

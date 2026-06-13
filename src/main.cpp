@@ -1,6 +1,8 @@
 #include "net/NetSession.hpp"
 #include "ui/ClamPopup.hpp"
 
+#include "game/GameSync.hpp"
+
 #include <Geode/Geode.hpp>
 #include <Geode/modify/MenuLayer.hpp>
 
@@ -12,6 +14,7 @@ $on_mod(Loaded) {
     log::info("Clam loaded");
     clam::NetSession::get().startLanBrowser();
     std::atexit(+[]() {
+        clam::GameSync::get().shutdown();
         clam::NetSession::get().stop();
         clam::NetSession::get().stopLanBrowser();
     });

@@ -7,6 +7,7 @@
 #include <Geode/binding/PlayerObject.hpp>
 
 #include <chrono>
+#include <utility>
 
 using namespace geode::prelude;
 
@@ -27,45 +28,95 @@ GameSync& GameSync::get() {
     return sync;
 }
 
-void GameSync::queueIncoming(std::string const& payload) {
-    std::lock_guard lock(m_mutex);
-    m_inbound.push_back(payload);
+GameSync::GameSync() {
+    startWorker();
 }
 
-void GameSync::drainIncoming() {
-    std::vector<std::string> batch;
-    bool sessionStop = false;
-    std::vector<uint64_t> removePeers;
+GameSync::~GameSync() {
+    shutdown();
+}
+
+void GameSync::shutdown() {
+    if (!m_workerRunning.exchange(false)) return;
+
     {
-        std::lock_guard lock(m_mutex);
-        batch = std::move(m_inbound);
-        sessionStop = m_pendingSessionStop;
-        m_pendingSessionStop = false;
-        removePeers = std::move(m_pendingRemovePeers);
-        m_pendingRemovePeers.clear();
+        std::lock_guard lock(m_queueMutex);
+        m_queueCv.notify_all();
     }
 
-    for (auto const& payload : batch) {
-        handleMessage(payload);
-    }
-
-    for (auto peerId : removePeers) {
-        removePeer(peerId);
-    }
-
-    if (sessionStop) {
-        onSessionStop();
+    if (m_worker.joinable()) {
+        m_worker.join();
     }
 }
 
-void GameSync::queueRemovePeer(uint64_t peerId) {
-    std::lock_guard lock(m_mutex);
-    m_pendingRemovePeers.push_back(peerId);
+void GameSync::startWorker() {
+    if (m_workerRunning.load()) return;
+    m_workerRunning.store(true);
+    m_worker = std::thread([this]() { workerLoop(); });
 }
 
-void GameSync::queueSessionStop() {
-    std::lock_guard lock(m_mutex);
-    m_pendingSessionStop = true;
+void GameSync::notifyWorker() {
+    m_queueCv.notify_one();
+}
+
+bool GameSync::hasWorkerWorkLocked() const {
+    return !m_commands.empty() || m_pendingSnapshot.has_value();
+}
+
+void GameSync::workerLoop() {
+    while (m_workerRunning.load()) {
+        std::vector<Command> commands;
+        std::optional<LocalPlayerSnapshot> snapshot;
+
+        {
+            std::unique_lock lock(m_queueMutex);
+            m_queueCv.wait(lock, [this]() {
+                return !m_workerRunning.load() || hasWorkerWorkLocked();
+            });
+
+            if (!m_workerRunning.load() && !hasWorkerWorkLocked()) {
+                break;
+            }
+
+            commands = std::move(m_commands);
+            snapshot = std::move(m_pendingSnapshot);
+        }
+
+        for (auto const& command : commands) {
+            processCommand(command);
+        }
+
+        if (snapshot) {
+            sendPlayerState(*snapshot);
+        }
+    }
+}
+
+void GameSync::processCommand(Command const& cmd) {
+    switch (cmd.type) {
+        case CommandType::InboundJson:
+            handleMessage(cmd.payload);
+            break;
+        case CommandType::OutboundJson:
+            NetSession::get().sendGameMessage(cmd.payload);
+            break;
+        case CommandType::RemovePeer: {
+            std::lock_guard lock(m_stateMutex);
+            m_remotes.erase(cmd.peerId);
+            break;
+        }
+        case CommandType::SessionStop:
+            clearRemoteState();
+            break;
+    }
+}
+
+void GameSync::queueIncoming(std::string const& payload) {
+    {
+        std::lock_guard lock(m_queueMutex);
+        m_commands.push_back({CommandType::InboundJson, payload});
+    }
+    notifyWorker();
 }
 
 void GameSync::onLevelEnter(int levelId) {
@@ -80,7 +131,14 @@ void GameSync::onLevelEnter(int levelId) {
     }
 
     auto peerId = NetSession::get().getLocalPeerId();
-    NetSession::get().sendGameMessage(makeLevelStart(peerId, levelId));
+    {
+        std::lock_guard lock(m_queueMutex);
+        m_commands.push_back({
+            CommandType::OutboundJson,
+            makeLevelStart(peerId, levelId),
+        });
+    }
+    notifyWorker();
 }
 
 void GameSync::onLevelExit() {
@@ -92,25 +150,38 @@ void GameSync::onLevelExit() {
         }
 
         auto peerId = NetSession::get().getLocalPeerId();
-        NetSession::get().sendGameMessage(makeLevelEnd(peerId, m_localLevelId));
+        {
+            std::lock_guard lock(m_queueMutex);
+            m_commands.push_back({
+                CommandType::OutboundJson,
+                makeLevelEnd(peerId, m_localLevelId),
+            });
+        }
+        notifyWorker();
     }
 
     m_inLevel = false;
     m_localLevelId = 0;
     m_sendTimer = 0.f;
-
-    std::lock_guard lock(m_mutex);
-    m_remotes.clear();
+    clearRemoteState();
 }
 
 void GameSync::onSessionStop() {
     m_inLevel = false;
     m_localLevelId = 0;
     m_sendTimer = 0.f;
+    clearRemoteState();
 
-    std::lock_guard lock(m_mutex);
+    {
+        std::lock_guard lock(m_queueMutex);
+        m_commands.clear();
+        m_pendingSnapshot.reset();
+    }
+}
+
+void GameSync::clearRemoteState() {
+    std::lock_guard lock(m_stateMutex);
     m_remotes.clear();
-    m_inbound.clear();
 }
 
 void GameSync::tickLocal(PlayLayer* layer, float dt) {
@@ -124,20 +195,43 @@ void GameSync::tickLocal(PlayLayer* layer, float dt) {
     auto* player = layer->m_player1;
     auto pos = player->getPosition();
 
-    auto peerId = NetSession::get().getLocalPeerId();
+    LocalPlayerSnapshot snapshot;
+    snapshot.peerId = NetSession::get().getLocalPeerId();
+    snapshot.levelId = m_localLevelId;
+    snapshot.x = pos.x;
+    snapshot.y = pos.y;
+    snapshot.rotation = player->getObjectRotation();
+    snapshot.dead = player->m_isDead;
+    snapshot.iconId = localIconId();
+    snapshot.scale = player->getScale();
+    if (snapshot.scale <= 0.f) snapshot.scale = 1.f;
+    snapshot.color1 = player->m_playerColor1;
+    snapshot.color2 = player->m_playerColor2;
+
+    {
+        std::lock_guard lock(m_queueMutex);
+        m_pendingSnapshot = snapshot;
+    }
+    notifyWorker();
+}
+
+void GameSync::sendPlayerState(LocalPlayerSnapshot const& snapshot) {
     NetSession::get().sendGameMessage(makePlayerState(
-        peerId,
-        m_localLevelId,
-        pos.x,
-        pos.y,
-        player->getObjectRotation(),
-        player->m_isDead,
-        localIconId()
+        snapshot.peerId,
+        snapshot.levelId,
+        snapshot.x,
+        snapshot.y,
+        snapshot.rotation,
+        snapshot.dead,
+        snapshot.iconId,
+        snapshot.scale,
+        snapshot.color1,
+        snapshot.color2
     ));
 }
 
 std::vector<RemotePeerState> GameSync::getRemoteStates(int levelId) const {
-    std::lock_guard lock(m_mutex);
+    std::lock_guard lock(m_stateMutex);
     std::vector<RemotePeerState> out;
 
     auto localPeerId = NetSession::get().getLocalPeerId();
@@ -151,9 +245,20 @@ std::vector<RemotePeerState> GameSync::getRemoteStates(int levelId) const {
     return out;
 }
 
-void GameSync::removePeer(uint64_t peerId) {
-    std::lock_guard lock(m_mutex);
-    m_remotes.erase(peerId);
+void GameSync::queueRemovePeer(uint64_t peerId) {
+    {
+        std::lock_guard lock(m_queueMutex);
+        m_commands.push_back({CommandType::RemovePeer, {}, peerId});
+    }
+    notifyWorker();
+}
+
+void GameSync::queueSessionStop() {
+    {
+        std::lock_guard lock(m_queueMutex);
+        m_commands.push_back({CommandType::SessionStop});
+    }
+    notifyWorker();
 }
 
 void GameSync::handleMessage(std::string const& payload) {
@@ -170,7 +275,7 @@ void GameSync::handleMessage(std::string const& payload) {
     if (type == "level_start") {
         auto levelId = static_cast<int>(root["levelId"].asInt().unwrapOr(0));
 
-        std::lock_guard lock(m_mutex);
+        std::lock_guard lock(m_stateMutex);
         auto& state = m_remotes[peerId];
         state.peerId = peerId;
         state.name = peerName(peerId);
@@ -181,7 +286,7 @@ void GameSync::handleMessage(std::string const& payload) {
     }
 
     if (type == "level_end") {
-        std::lock_guard lock(m_mutex);
+        std::lock_guard lock(m_stateMutex);
         m_remotes.erase(peerId);
         return;
     }
@@ -194,7 +299,7 @@ void GameSync::handleMessage(std::string const& payload) {
 void GameSync::applyPlayerState(matjson::Value const& root) {
     auto peerId = static_cast<uint64_t>(root["peerId"].asInt().unwrapOr(0));
 
-    std::lock_guard lock(m_mutex);
+    std::lock_guard lock(m_stateMutex);
     auto& state = m_remotes[peerId];
     state.peerId = peerId;
     state.name = peerName(peerId);
@@ -204,6 +309,10 @@ void GameSync::applyPlayerState(matjson::Value const& root) {
     state.rotation = static_cast<float>(root["rotation"].asDouble().unwrapOr(0.0));
     state.dead = root["dead"].asBool().unwrapOr(false);
     state.iconId = static_cast<int>(root["iconId"].asInt().unwrapOr(1));
+    state.scale = static_cast<float>(root["scale"].asDouble().unwrapOr(1.0));
+    if (state.scale <= 0.f) state.scale = 1.f;
+    state.color1 = unpackColor(static_cast<int>(root["color1"].asInt().unwrapOr(0xFFFFFF)));
+    state.color2 = unpackColor(static_cast<int>(root["color2"].asInt().unwrapOr(0xFFFFFF)));
     state.inLevel = true;
     state.lastSeenMs = nowMs();
 }

@@ -2,10 +2,26 @@
 
 #include <Geode/utils/general.hpp>
 
+#include <cocos2d.h>
+
 #include <cstdint>
 #include <string>
 
 namespace clam {
+
+inline int packColor(cocos2d::ccColor3B const& color) {
+    return (static_cast<int>(color.r) << 16)
+        | (static_cast<int>(color.g) << 8)
+        | static_cast<int>(color.b);
+}
+
+inline cocos2d::ccColor3B unpackColor(int packed) {
+    return {
+        static_cast<GLubyte>((packed >> 16) & 0xFF),
+        static_cast<GLubyte>((packed >> 8) & 0xFF),
+        static_cast<GLubyte>(packed & 0xFF),
+    };
+}
 
 inline std::string makeHello(std::string const& name) {
     return matjson::makeObject({
@@ -44,7 +60,10 @@ inline std::string makePlayerState(
     float y,
     float rotation,
     bool dead,
-    int iconId
+    int iconId,
+    float scale,
+    cocos2d::ccColor3B const& color1,
+    cocos2d::ccColor3B const& color2
 ) {
     return matjson::makeObject({
         {"type", "player_state"},
@@ -55,6 +74,9 @@ inline std::string makePlayerState(
         {"rotation", rotation},
         {"dead", dead},
         {"iconId", iconId},
+        {"scale", scale},
+        {"color1", packColor(color1)},
+        {"color2", packColor(color2)},
     }).dump();
 }
 
